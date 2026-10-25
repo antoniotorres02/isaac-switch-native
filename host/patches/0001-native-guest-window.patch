@@ -1,0 +1,831 @@
+diff --git a/scripts/recomp/host/include/isaac_host.h b/scripts/recomp/host/include/isaac_host.h
+index 08cb06a..a59083c 100644
+--- a/scripts/recomp/host/include/isaac_host.h
++++ b/scripts/recomp/host/include/isaac_host.h
+@@ -137,6 +137,26 @@ extern "C" {
+ #define ISAAC_GUARD_SIZE      0x00100000u
+ #define ISAAC_HOST_BASE_VA    0x1c000000u       /* -sGLOBAL_BASE=469762048     */
+ 
++#ifdef ISAAC_NATIVE
++/* Native: no wasm memory to keep small, and 384 MiB is not enough once mods
++ * are loaded -- leaving the mods menu reloads every mod's resources while the
++ * old ones are still live, and the arena ran out at 382.7 MiB (a 32 MiB font
++ * texel buffer refused, then the game's error longjmp). The heap moves above
++ * the old map with 768 MiB (round 24f's size); the fixed regions below keep
++ * their addresses, which the generated shim table (0x1b000000) depends on.
++ * The guest map is then 0 .. ISAAC_HOST_BASE_VA. */
++#undef  ISAAC_HEAP_VA
++#undef  ISAAC_HEAP_SIZE
++#undef  ISAAC_GUEST_LIMIT_VA
++#undef  ISAAC_GUARD_VA
++#undef  ISAAC_HOST_BASE_VA
++#define ISAAC_HEAP_VA         0x1c100000u
++#define ISAAC_HEAP_SIZE       0x30000000u       /* 768 MiB */
++#define ISAAC_GUEST_LIMIT_VA  0x4c100000u
++#define ISAAC_GUARD_VA        0x4c100000u
++#define ISAAC_HOST_BASE_VA    0x4c200000u
++#endif
++
+ /* True if `va` is somewhere the guest is allowed to touch. Host code uses this
+  * to reject a guest-supplied pointer before dereferencing it. */
+ static inline int isaac_is_guest_va(uint32_t va) {
+@@ -147,14 +167,46 @@ static inline int isaac_is_guest_va(uint32_t va) {
+ /* Identity addressing makes these casts, not conversions. They exist so that
+  * intent is greppable and so a future non-identity mode has one place to change. */
+ 
++/* The real GLES3 backend (host_gl_webgl.c) serves the web build and, with
++ * ISAAC_NATIVE_GL, a native EGL context; otherwise the headless fake GL in
++ * host_shims_gl.c answers. */
++#if defined(ISAAC_WEB) || defined(ISAAC_NATIVE_GL)
++#define ISAAC_REAL_GL 1
++#endif
++
++#ifdef ISAAC_NATIVE
++/* Native 64-bit host: the guest map lives in a reserved window at
++ * recomp_mem_base (the same base the lifted code's RECOMP_PTR uses with
++ * RECOMP_MEM_IDENTITY=0). A host pointer outside the guest map cannot be
++ * named by a 32-bit guest address; isaac_va_escape() reports and aborts so
++ * each such hand-off is found and fixed instead of silently truncated. */
++extern uint8_t *recomp_mem_base;
++uint32_t isaac_va_escape(const void *p, const void *caller);
++/* isaac_g keeps wasm's semantics, where guest address 0 is readable memory
++ * (host code checks isaac_is_guest_va(p) and then reads it). isaac_gp is for
++ * pointers handed on to an external API -- Lua, libc -- where guest 0 must
++ * stay NULL, as identity addressing made it (luaL_loadbufferx's mode, an
++ * optional out-parameter). */
++static inline void *isaac_g(uint32_t va) { return recomp_mem_base + va; }
++static inline void *isaac_gp(uint32_t va) { return va ? recomp_mem_base + va : NULL; }
++static inline uint8_t *isaac_raw(uint32_t va) { return recomp_mem_base + va; }
++static inline uint32_t isaac_va(const void *p) {
++    uintptr_t d = (uintptr_t)p - (uintptr_t)recomp_mem_base;
++    if (__builtin_expect(d < ISAAC_HOST_BASE_VA, 1)) return (uint32_t)d;
++    return isaac_va_escape(p, __builtin_return_address(0));
++}
++#else
+ static inline void *isaac_g(uint32_t va) { return (void *)(uintptr_t)va; }
++static inline void *isaac_gp(uint32_t va) { return (void *)(uintptr_t)va; }
++static inline uint8_t *isaac_raw(uint32_t va) { return (uint8_t *)(uintptr_t)va; }
+ static inline uint32_t isaac_va(const void *p) { return (uint32_t)(uintptr_t)p; }
++#endif
+ 
+-static inline uint32_t isaac_r32(uint32_t va) { return *(const uint32_t *)isaac_g(va); }
+-static inline void isaac_w32(uint32_t va, uint32_t v) { *(uint32_t *)isaac_g(va) = v; }
+-static inline uint16_t isaac_r16(uint32_t va) { return *(const uint16_t *)isaac_g(va); }
+-static inline void isaac_w16(uint32_t va, uint16_t v) { *(uint16_t *)isaac_g(va) = v; }
+-static inline uint8_t isaac_r8(uint32_t va) { return *(const uint8_t *)isaac_g(va); }
++static inline uint32_t isaac_r32(uint32_t va) { return *(const uint32_t *)isaac_raw(va); }
++static inline void isaac_w32(uint32_t va, uint32_t v) { *(uint32_t *)isaac_raw(va) = v; }
++static inline uint16_t isaac_r16(uint32_t va) { return *(const uint16_t *)isaac_raw(va); }
++static inline void isaac_w16(uint32_t va, uint16_t v) { *(uint16_t *)isaac_raw(va) = v; }
++static inline uint8_t isaac_r8(uint32_t va) { return *(const uint8_t *)isaac_raw(va); }
+ 
+ static inline int isaac_in_image(uint32_t va) {
+     return va >= ISAAC_IMAGE_BASE && va < ISAAC_IMAGE_END;
+diff --git a/scripts/recomp/host/src/host_boot.c b/scripts/recomp/host/src/host_boot.c
+index 03f7af3..b2a1287 100644
+--- a/scripts/recomp/host/src/host_boot.c
++++ b/scripts/recomp/host/src/host_boot.c
+@@ -67,7 +67,19 @@ static int verify_image(void) {
+      * single most valuable assertion in the boot path: if it fires, the
+      * runtime and the guest are sharing a blast radius. */
+     static const char probe = 0;
++#ifdef ISAAC_NATIVE
++    /* Native: host statics are outside the guest window by construction;
++     * the equivalent check is that the window does not contain them. */
++    uintptr_t probe_off = (uintptr_t)&probe - (uintptr_t)recomp_mem_base;
++    if (probe_off < (1ull << 32)) {
++        isaac_log("[isaac][boot] FATAL: host static data at %p is inside the "
++                  "guest window at %p", (const void *)&probe, (void *)recomp_mem_base);
++        return 0;
++    }
++    uint32_t host_va = 0xFFFFFFFFu;
++#else
+     uint32_t host_va = isaac_va(&probe);
++#endif
+     if (host_va < ISAAC_HOST_BASE_VA) {
+         isaac_log("[isaac][boot] FATAL: host static data at 0x%08x is below the "
+                   "host base 0x%08x -- it is inside the guest's writable range "
+diff --git a/scripts/recomp/host/src/host_gl_clientarrays.c b/scripts/recomp/host/src/host_gl_clientarrays.c
+index 966f55b..d1c9170 100644
+--- a/scripts/recomp/host/src/host_gl_clientarrays.c
++++ b/scripts/recomp/host/src/host_gl_clientarrays.c
+@@ -95,7 +95,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(ISAAC_NATIVE_GL)
+ #include <GLES3/gl3.h>
+ #else
+ /* Host-test build: the logic is exercised without a GL context. */
+@@ -284,7 +284,7 @@ static uint32_t ring_put(GLenum target, gl_ring *r, uint32_t initial,
+         ++r->orphans;
+     }
+     uint32_t off = r->head;
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(ISAAC_NATIVE_GL)
+     if (src) glBufferSubData(target, (GLintptr)off, (GLsizeiptr)bytes, src);
+ #else
+     (void)src;
+@@ -421,7 +421,7 @@ static void stage_attributes(uint32_t vertex_count) {
+         if (!a->enabled || !a->configured || !a->client_ptr) continue;
+         if (vertex_count) off = attribute_offset(off, a);
+         uint32_t bytes = attribute_span(a, vertex_count);
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(ISAAC_NATIVE_GL)
+         glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)(at + off), (GLsizeiptr)bytes,
+                         isaac_g(a->client_ptr));
+ #endif
+@@ -482,7 +482,7 @@ void isaac_gl_draw_arrays_instanced(GLenum mode, GLint first, GLsizei count,
+     if (count <= 0 || prims <= 0) return;
+     ensure_buffers();
+     stage_attributes((uint32_t)first + (uint32_t)count);
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(ISAAC_NATIVE_GL)
+     glDrawArraysInstanced(mode, first, count, prims);
+ #else
+     (void)mode;
+diff --git a/scripts/recomp/host/src/host_gl_webgl.c b/scripts/recomp/host/src/host_gl_webgl.c
+index cf45029..2f288b9 100644
+--- a/scripts/recomp/host/src/host_gl_webgl.c
++++ b/scripts/recomp/host/src/host_gl_webgl.c
+@@ -29,7 +29,7 @@
+  * Nothing needed enum translation. Unknown values are still passed through
+  * and would surface as GL errors, which isaac_web_present() polls once per
+  * frame (glGetError) and logs. */
+-#ifdef ISAAC_WEB
++#if defined(ISAAC_WEB) || defined(ISAAC_NATIVE_GL)   /* = ISAAC_REAL_GL, before isaac_host.h */
+ #include "isaac_host.h"
+ #include "shim_decls.h"
+ 
+@@ -52,8 +52,10 @@ static int tex_band_mode(void) {
+     if (g_tex_band_mode < 0) { const char *e = getenv("ISAAC_GL_TEX_BAND"); g_tex_band_mode = (e && *e == '0') ? 0 : 1; }
+     return g_tex_band_mode;
+ }
++#ifdef ISAAC_WEB
+ #include <emscripten.h>
+ #include <emscripten/html5.h>
++#endif
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -194,6 +196,16 @@ void isaac_web_get_integerv(uint32_t pname, uint32_t out) {
+ }
+ 
+ /* ---- frame presentation --------------------------------------------------- */
++#ifdef ISAAC_NATIVE_GL
++/* Native: the EGL layer (native_gl.c) owns the surface. It says which
++ * frames it wants read back (screenshots), takes the pixels, and swaps:
++ * after the readback when it took one, from wants_frame otherwise. */
++int isaac_native_wants_frame(unsigned n);
++void isaac_native_present(const uint8_t *px, int w, int h);
++void isaac_native_drawable_size(int *w, int *h);
++static void isaac_present_js(const uint8_t *px, int w, int h) { isaac_native_present(px, w, h); }
++static int isaac_wants_frame_js(unsigned n) { return isaac_native_wants_frame(n); }
++#else
+ EM_JS(void, isaac_present_js, (const uint8_t *px, int w, int h), {
+     if (typeof Module.isaacPresent === "function") Module.isaacPresent(px, w, h);
+ });
+@@ -206,6 +218,7 @@ EM_JS(int, isaac_wants_frame_js, (unsigned n), {
+     if (typeof Module.isaacWantsFrame !== "function") return 1;
+     try { return Module.isaacWantsFrame(n) ? 1 : 0; } catch (e) { return 1; }
+ });
++#endif
+ static uint8_t *g_present_buf;
+ static uint32_t g_present_cap;
+ void isaac_web_present(void) {
+@@ -224,7 +237,11 @@ void isaac_web_present(void) {
+     }
+     if (!isaac_wants_frame_js(g_present_count)) return;   /* no PNG wanted: no readback */
+     int w = 0, h = 0;
++#ifdef ISAAC_NATIVE_GL
++    isaac_native_drawable_size(&w, &h);
++#else
+     emscripten_webgl_get_drawing_buffer_size(emscripten_webgl_get_current_context(), &w, &h);
++#endif
+     if (w <= 0 || h <= 0) return;
+     uint32_t need = (uint32_t)w * (uint32_t)h * 4u;
+     if (need > g_present_cap) {
+@@ -542,10 +559,16 @@ GLFN(glProgramUniform1ivEXT) { ENTER; RET0; }
+ /* Round 48: the first three of the game's own glReadPixels log the wasm stack
+  * (the names come from the module's name section): the engine reads pixels
+  * back in play, one call every dozen frames, each a GPU pipeline drain. */
++#ifdef ISAAC_NATIVE_GL
++static void isaac_readpixels_stack_js(int x, int y, int w, int h) {
++    isaac_log("[isaac][gl] glReadPixels %dx%d at %d,%d", w, h, x, y);
++}
++#else
+ EM_JS(void, isaac_readpixels_stack_js, (int x, int y, int w, int h), {
+     var st = (new Error().stack || "").split("\n").slice(2, 12).map(function (l) { var t = l.trim(); if (t.indexOf("at ") === 0) t = t.slice(3); return t.split(" ")[0]; }).join(" < ");
+     err("[isaac][gl] glReadPixels " + w + "x" + h + " at " + x + "," + y + " from: " + st);
+ });
++#endif
+ static uint32_t g_rp_logged;
+ /* Round 94: the game's one readback, made asynchronous. On a footstep frame
+  * (Entity_Player::IsFootstepFrame 0x007b9940, every 6 ticks, from 0x007b8cb0)
+@@ -565,7 +588,17 @@ static uint32_t g_rp_logged;
+  * ISAAC_READPIXELS_CHECK=1 also reads each pixel synchronously and logs the
+  * pair, so the lag can be seen. */
+ /* WebGL2's getBufferSubData; Emscripten implements it, GLES3's gl3.h does not declare it */
++#ifdef ISAAC_NATIVE_GL
++/* Native GLES3 reads a buffer back by mapping it. */
++static void isaac_gl_get_buffer_sub_data(GLenum target, GLintptr offset, GLsizeiptr size, void *data) {
++    void *p = glMapBufferRange(target, offset, size, GL_MAP_READ_BIT);
++    if (p) { memcpy(data, p, (size_t)size); glUnmapBuffer(target); }
++    else memset(data, 0, (size_t)size);
++}
++#define glGetBufferSubData isaac_gl_get_buffer_sub_data
++#else
+ void glGetBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, void *data);
++#endif
+ #define RP_RING 4
+ static GLuint g_rp_pbo[RP_RING];
+ static GLsync g_rp_fence[RP_RING];
+@@ -781,4 +814,4 @@ GLFN(glViewport) {
+     RET0;
+ }
+ 
+-#endif /* ISAAC_WEB */
++#endif /* ISAAC_REAL_GL */
+diff --git a/scripts/recomp/host/src/host_lua.c b/scripts/recomp/host/src/host_lua.c
+index 1b252ad..d5f4f25 100644
+--- a/scripts/recomp/host/src/host_lua.c
++++ b/scripts/recomp/host/src/host_lua.c
+@@ -42,6 +42,7 @@
+ 
+ #include <stdio.h>
+ #include <string.h>
++#include <setjmp.h>
+ 
+ #if defined(__has_include)
+ #  if __has_include("lua.h")
+@@ -77,11 +78,11 @@ _Static_assert(LUA_EXTRASPACE == 4, "LUA_EXTRASPACE must be 4 (32-bit build)");
+ 
+ /* ---- guest pointer plumbing -------------------------------------------- */
+ 
+-#define L_ARG(n)   ((lua_State *)isaac_g(isaac_arg(cpu, (n))))
++#define L_ARG(n)   ((lua_State *)isaac_gp(isaac_arg(cpu, (n))))
+ #define I_ARG(n)   ((int)isaac_arg(cpu, (n)))
+ #define S_ARG(n)   (isaac_is_guest_va(isaac_arg(cpu, (n)))                     \
+-                        ? (const char *)isaac_g(isaac_arg(cpu, (n))) : NULL)
+-#define P_ARG(n)   ((void *)isaac_g(isaac_arg(cpu, (n))))
++                        ? (const char *)isaac_gp(isaac_arg(cpu, (n))) : NULL)
++#define P_ARG(n)   ((void *)isaac_gp(isaac_arg(cpu, (n))))
+ 
+ /* A 64-bit by-value argument occupies two stack slots. */
+ static lua_Integer i64_arg(const CpuState *cpu, unsigned slot) {
+@@ -107,6 +108,30 @@ static void ret_ptr(CpuState *cpu, const void *p) {
+     cpu->EAX = p ? isaac_va(p) : 0;
+ }
+ 
++extern uint32_t isaac_guest_alloc(uint32_t n);
++/* A C string the guest may read: Lua's own strings already live in the
++ * guest arena; a static one (lua_typename, lua_Debug::what) is copied into
++ * the arena once per distinct host address and kept for the process. */
++static uint32_t isaac_guest_cstr_intern(const char *s) {
++    if (!s) return 0;
++#ifdef ISAAC_NATIVE
++    uintptr_t d = (uintptr_t)s - (uintptr_t)recomp_mem_base;
++    if (d < ISAAC_HOST_BASE_VA) return (uint32_t)d;
++    static struct { const char *host; uint32_t va; } pool[256];
++    static unsigned used;
++    for (unsigned i = 0; i < used; ++i)
++        if (pool[i].host == s) return pool[i].va;
++    size_t n = strlen(s) + 1;
++    uint32_t va = isaac_guest_alloc((uint32_t)n);
++    if (!va) return 0;
++    memcpy(isaac_g(va), s, n);
++    if (used < sizeof pool / sizeof pool[0]) { pool[used].host = s; pool[used].va = va; ++used; }
++    return va;
++#else
++    return isaac_va(s);
++#endif
++}
++
+ /* ---- 2. the allocator --------------------------------------------------- */
+ 
+ extern uint32_t isaac_guest_alloc(uint32_t n);
+@@ -801,7 +826,7 @@ LUA_SHIM(lua_pushfstring) {
+ 
+ /* get / to */
+ LUA_SHIM(lua_type)        { cpu->EAX = (uint32_t)lua_type(L_ARG(0), I_ARG(1)); }
+-LUA_SHIM(lua_typename)    { ret_ptr(cpu, lua_typename(L_ARG(0), I_ARG(1))); }
++LUA_SHIM(lua_typename)    { cpu->EAX = isaac_guest_cstr_intern(lua_typename(L_ARG(0), I_ARG(1))); }
+ LUA_SHIM(lua_toboolean)   { cpu->EAX = (uint32_t)lua_toboolean(L_ARG(0), I_ARG(1)); }
+ LUA_SHIM(lua_touserdata)  { ret_ptr(cpu, lua_touserdata(L_ARG(0), I_ARG(1))); }
+ LUA_SHIM(lua_isstring)    { cpu->EAX = (uint32_t)lua_isstring(L_ARG(0), I_ARG(1)); }
+@@ -843,13 +868,84 @@ LUA_SHIM(lua_callk) {
+     cpu->EAX = 0;
+ }
+ LUA_SHIM(lua_pcallk) {
++    /* A Lua error raised under a guest lua_CFunction (call_guest_cfunction)
++     * longjmps from the host lua_error straight back to this protected call,
++     * over that call's isaac_guest_call frame, which then never restores the
++     * guest jump buffer or g_guest_call_esp. Both are put back here, where the
++     * error lands: a later C++ catch (host_shims_eh.c) or guest longjmp would
++     * otherwise use the dead trampoline frame -- measured with a mod whose
++     * LoadData found no save, which left g_guest_call_esp 1 MiB below the
++     * engine's own throw and its LuaException uncatchable. */
++    extern void isaac_guest_jmp_save(void *dst);
++    extern void isaac_guest_jmp_restore(const void *src);
++    extern uint32_t g_guest_call_esp;
++    /* The same jump also skips the binding's own epilogues, which would have
++     * popped its SEH registrations; on Windows the Lua DLL's longjmp unwinds
++     * them, restoring fs:[0] to the protected call's. So does this. */
++    jmp_buf guest_saved;
++    const uint32_t guest_esp_saved = g_guest_call_esp;
++    const uint32_t seh_saved = isaac_r32(ISAAC_TEB_VA);
++    isaac_guest_jmp_save(guest_saved);
+     cpu->EAX = (uint32_t)lua_pcallk(L_ARG(0), I_ARG(1), I_ARG(2), I_ARG(3), 0, NULL);
++    isaac_guest_jmp_restore(guest_saved);
++    g_guest_call_esp = guest_esp_saved;
++    isaac_w32(ISAAC_TEB_VA, seh_saved);
+ }
+ LUA_SHIM(lua_gc)      { cpu->EAX = (uint32_t)lua_gc(L_ARG(0), I_ARG(1), I_ARG(2)); }
++#ifdef ISAAC_NATIVE
++/* Native: the guest's lua_Debug has the 32-bit DLL's layout (100 bytes:
++ * four string pointers, i_ci last), not this build's. Each guest record is
++ * shadowed by a host lua_Debug -- getstack fills i_ci there, getinfo reads
++ * it back -- and the public fields are copied out in the guest layout. */
++#define GUEST_AR_SLOTS 16
++static struct { uint32_t va; lua_Debug ar; } g_ar[GUEST_AR_SLOTS];
++static unsigned g_ar_next;
++static lua_Debug *guest_ar(uint32_t va) {
++    for (unsigned i = 0; i < GUEST_AR_SLOTS; ++i)
++        if (g_ar[i].va == va) return &g_ar[i].ar;
++    unsigned i = g_ar_next++ % GUEST_AR_SLOTS;
++    g_ar[i].va = va;
++    memset(&g_ar[i].ar, 0, sizeof g_ar[i].ar);
++    return &g_ar[i].ar;
++}
++static void guest_ar_store(uint32_t va, const lua_Debug *ar) {
++    isaac_w32(va + 0, (uint32_t)ar->event);
++    isaac_w32(va + 4, isaac_guest_cstr_intern(ar->name));
++    isaac_w32(va + 8, isaac_guest_cstr_intern(ar->namewhat));
++    isaac_w32(va + 12, isaac_guest_cstr_intern(ar->what));
++    isaac_w32(va + 16, isaac_guest_cstr_intern(ar->source));
++    isaac_w32(va + 20, (uint32_t)ar->currentline);
++    isaac_w32(va + 24, (uint32_t)ar->linedefined);
++    isaac_w32(va + 28, (uint32_t)ar->lastlinedefined);
++    uint8_t *p = isaac_raw(va);
++    p[32] = ar->nups;
++    p[33] = ar->nparams;
++    p[34] = (uint8_t)ar->isvararg;
++    p[35] = (uint8_t)ar->istailcall;
++    memcpy(p + 36, ar->short_src, LUA_IDSIZE);
++}
++LUA_SHIM(lua_getinfo) {
++    uint32_t va = isaac_arg(cpu, 2);
++    if (!va || !isaac_is_guest_va(va)) { cpu->EAX = 0; return; }
++    lua_Debug *ar = guest_ar(va);
++    int rc = lua_getinfo(L_ARG(0), S_ARG(1), ar);
++    guest_ar_store(va, ar);
++    cpu->EAX = (uint32_t)rc;
++}
++LUA_SHIM(lua_getstack) {
++    uint32_t va = isaac_arg(cpu, 2);
++    if (!va || !isaac_is_guest_va(va)) { cpu->EAX = 0; return; }
++    lua_Debug *ar = guest_ar(va);
++    int rc = lua_getstack(L_ARG(0), I_ARG(1), ar);
++    isaac_w32(va + 0, (uint32_t)ar->event);
++    cpu->EAX = (uint32_t)rc;
++}
++#else
+ LUA_SHIM(lua_getinfo) { cpu->EAX = (uint32_t)lua_getinfo(L_ARG(0), S_ARG(1), (lua_Debug *)P_ARG(2)); }
+ /* Register-held only (0x00930b63, the debug-hook path): the call-site census
+  * saw 0 sites, so it had no binding and would have trapped. */
+ LUA_SHIM(lua_getstack) { cpu->EAX = (uint32_t)lua_getstack(L_ARG(0), I_ARG(1), (lua_Debug *)P_ARG(2)); }
++#endif
+ 
+ /* auxiliary */
+ LUA_SHIM(luaL_checkinteger) { ret_int(cpu, luaL_checkinteger(L_ARG(0), I_ARG(1))); }
+diff --git a/scripts/recomp/host/src/host_shims_crt.c b/scripts/recomp/host/src/host_shims_crt.c
+index ee93d31..5ece0ee 100644
+--- a/scripts/recomp/host/src/host_shims_crt.c
++++ b/scripts/recomp/host/src/host_shims_crt.c
+@@ -324,26 +324,26 @@ void imp_api_ms_win_crt_stdio____stdio_common_vsscanf(CpuState *restrict cpu) {
+ #pragma GCC diagnostic ignored "-Wformat-security"
+     switch (n) {
+         case 0:  cpu->EAX = sscanf(hbuf, hfmt); break;
+-        case 1:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0)); break;
+-        case 2:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1)); break;
+-        case 3:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2)); break;
+-        case 4:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3)); break;
+-        case 5:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3),
+-                                   (void *)ARG(4)); break;
+-        case 6:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3),
+-                                   (void *)ARG(4), (void *)ARG(5)); break;
+-        case 7:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3),
+-                                   (void *)ARG(4), (void *)ARG(5),
+-                                   (void *)ARG(6)); break;
+-        case 8:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3),
+-                                   (void *)ARG(4), (void *)ARG(5),
+-                                   (void *)ARG(6), (void *)ARG(7)); break;
++        case 1:  cpu->EAX = sscanf(hbuf, hfmt, isaac_g(ARG(0))); break;
++        case 2:  cpu->EAX = sscanf(hbuf, hfmt, isaac_g(ARG(0)), isaac_g(ARG(1))); break;
++        case 3:  cpu->EAX = sscanf(hbuf, hfmt, isaac_g(ARG(0)), isaac_g(ARG(1)),
++                                   isaac_g(ARG(2))); break;
++        case 4:  cpu->EAX = sscanf(hbuf, hfmt, isaac_g(ARG(0)), isaac_g(ARG(1)),
++                                   isaac_g(ARG(2)), isaac_g(ARG(3))); break;
++        case 5:  cpu->EAX = sscanf(hbuf, hfmt, isaac_g(ARG(0)), isaac_g(ARG(1)),
++                                   isaac_g(ARG(2)), isaac_g(ARG(3)),
++                                   isaac_g(ARG(4))); break;
++        case 6:  cpu->EAX = sscanf(hbuf, hfmt, isaac_g(ARG(0)), isaac_g(ARG(1)),
++                                   isaac_g(ARG(2)), isaac_g(ARG(3)),
++                                   isaac_g(ARG(4)), isaac_g(ARG(5))); break;
++        case 7:  cpu->EAX = sscanf(hbuf, hfmt, isaac_g(ARG(0)), isaac_g(ARG(1)),
++                                   isaac_g(ARG(2)), isaac_g(ARG(3)),
++                                   isaac_g(ARG(4)), isaac_g(ARG(5)),
++                                   isaac_g(ARG(6))); break;
++        case 8:  cpu->EAX = sscanf(hbuf, hfmt, isaac_g(ARG(0)), isaac_g(ARG(1)),
++                                   isaac_g(ARG(2)), isaac_g(ARG(3)),
++                                   isaac_g(ARG(4)), isaac_g(ARG(5)),
++                                   isaac_g(ARG(6)), isaac_g(ARG(7))); break;
+         default:
+             isaac_log("[isaac][crt] __stdio_common_vsscanf: format with %u "
+                       "conversions exceeds the 8-arg dispatch "
+diff --git a/scripts/recomp/host/src/host_shims_crt_time.c b/scripts/recomp/host/src/host_shims_crt_time.c
+index 36c53b8..93a29a7 100644
+--- a/scripts/recomp/host/src/host_shims_crt_time.c
++++ b/scripts/recomp/host/src/host_shims_crt_time.c
+@@ -101,6 +101,20 @@ void imp_api_ms_win_crt_time___gmtime64(CpuState *restrict cpu) {
+     localtime64_impl(cpu, CRT_TM_GM_VA, 1);
+ }
+ 
++#ifdef __SWITCH__
++/* newlib has no timegm: UTC seconds from the broken-down fields, with
++ * out-of-range months folded the way timegm normalises them. */
++static time_t timegm(struct tm *tm) {
++    int64_t y = (int64_t)tm->tm_year + 1900, m = tm->tm_mon;
++    y += m / 12; m %= 12; if (m < 0) { m += 12; --y; }
++    int64_t a = (m < 2) ? y - 1 : y, mp = (m + 10) % 12;         /* March-based month */
++    int64_t era = (a >= 0 ? a : a - 399) / 400, yoe = a - era * 400;
++    int64_t doy = (153 * mp + 2) / 5 + tm->tm_mday - 1;
++    int64_t days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
++    return (time_t)(days * 86400 + (int64_t)tm->tm_hour * 3600 + (int64_t)tm->tm_min * 60 + tm->tm_sec);
++}
++#endif
++
+ /* int64_t _mkgmtime64(struct tm *tm) -- EDX:EAX. */
+ void imp_api_ms_win_crt_time___mkgmtime64(CpuState *restrict cpu) {
+     uint32_t p = isaac_arg(cpu, 0);
+diff --git a/scripts/recomp/host/src/host_shims_dyn.c b/scripts/recomp/host/src/host_shims_dyn.c
+index c4d1b21..9651e95 100644
+--- a/scripts/recomp/host/src/host_shims_dyn.c
++++ b/scripts/recomp/host/src/host_shims_dyn.c
+@@ -33,7 +33,7 @@ void imp_kernel32__VerSetConditionMask(CpuState *restrict cpu) {
+     uint32_t lo = isaac_arg(cpu, 0), hi = isaac_arg(cpu, 1);
+     uint32_t type = isaac_arg(cpu, 2), cond = isaac_arg(cpu, 3);
+     uint64_t m = ((uint64_t)hi << 32) | lo;
+-    unsigned shift = (type & 0x3f) * 8;
++    unsigned shift = ((type & 0x3f) * 8) & 63u;   /* wasm i64.shl: count mod 64 */
+     m &= ~((uint64_t)0xff << shift);
+     m |= ((uint64_t)(cond == VER_AND ? VER_AND : cond) & 0xff) << shift;
+     cpu->EAX = (uint32_t)m;
+@@ -72,8 +72,10 @@ static void verify_os_version(CpuState *restrict cpu) {
+         /* The condition mask stores each type's operator at (type BIT VALUE
+          * * 8), not (bit index * 8): VER_MAJORVERSION=2 -> shift 16, etc. */
+         unsigned shift = bit * 8;
+-        unsigned op = (unsigned)(cond >> shift) & 0x7;
+-        int or_flag = (int)((cond >> (shift + 3)) & 1);
++        /* Types >= 0x08 shift past 63, which C leaves undefined; wasm's
++         * i64.shr_u (what the web build executes) takes the count mod 64. */
++        unsigned op = (unsigned)(cond >> (shift & 63u)) & 0x7;
++        int or_flag = (int)((cond >> ((shift + 3) & 63u)) & 1);
+         if (!op) continue;         /* no condition recorded for this type */
+         int real, req;
+         switch (bit) {
+diff --git a/scripts/recomp/host/src/host_shims_fs.c b/scripts/recomp/host/src/host_shims_fs.c
+index 8c71e4a..3a2d738 100644
+--- a/scripts/recomp/host/src/host_shims_fs.c
++++ b/scripts/recomp/host/src/host_shims_fs.c
+@@ -577,6 +577,23 @@ static int fs_materialise(fs_entry *e) {
+     ++g_lazy_loads;
+     return 1;
+ }
++#ifdef ISAAC_NATIVE
++/* Native: Lua's loadfile/dofile go through the RAM-FS first (native_lua_ramfs.c).
++ * The browser gets this from Emscripten's MEMFS holding the same mod files; a
++ * native process would otherwise open "//mods/<mod>/main.lua" on the real disk.
++ * Windowed entries (the large archives) are never scripts and are refused. */
++int isaac_fs_read_whole(const char *path, const uint8_t **data, uint32_t *len) {
++    char key[256];
++    if (!path || !fs_key(path, key, sizeof key)) return 0;
++    fs_entry *e = fs_find(key);
++    if (!e || e->is_dir) return 0;
++    if (e->lazy && !fs_materialise(e)) return 0;
++    if (e->windowed) return 0;
++    *data = e->data;
++    *len = e->size;
++    return 1;
++}
++#endif
+ uint32_t isaac_fs_lazy_loads(void) { return g_lazy_loads; }
+ uint32_t isaac_fs_lazy_failures(void) { return g_lazy_failures; }
+ 
+diff --git a/scripts/recomp/host/src/host_shims_gl.c b/scripts/recomp/host/src/host_shims_gl.c
+index 33f116a..98b6156 100644
+--- a/scripts/recomp/host/src/host_shims_gl.c
++++ b/scripts/recomp/host/src/host_shims_gl.c
+@@ -137,11 +137,18 @@ static int web_context_ready(void) {
+     return 1;
+ }
+ int isaac_web_gl_ready(void) { return web_context_ready(); }
++#elif defined(ISAAC_NATIVE_GL)
++/* Native: one EGL GLES3 context made current by the driver layer
++ * (native_gl.c); the game's wgl contexts all map onto it, as they map onto
++ * the one WebGL2 canvas context in the web build. */
++int isaac_native_gl_ready(void);
++static int web_context_ready(void) { return isaac_native_gl_ready(); }
++int isaac_web_gl_ready(void) { return web_context_ready(); }
+ #endif
+ void imp_opengl32__wglCreateContext(CpuState *restrict cpu) {
+     (void)isaac_arg(cpu, 0);
+     static uint32_t n = 0;
+-#ifdef ISAAC_WEB
++#ifdef ISAAC_REAL_GL
+     if (!web_context_ready()) { cpu->EAX = 0; return; }
+ #endif
+     cpu->EAX = 0x77880000u + (++n & 0x7ffffu);
+@@ -263,7 +270,7 @@ void isaac_gl_census_report(void) {
+ void imp_opengl32__glGetIntegerv(CpuState *restrict cpu) {
+     gl_census("glGetIntegerv", isaac_arg(cpu, 0), 0, 0, 0);
+     uint32_t pname = isaac_arg(cpu, 0), out = isaac_arg(cpu, 1);
+-#ifdef ISAAC_WEB
++#ifdef ISAAC_REAL_GL
+     /* Real answers for state and limits; the version/extension gates below
+      * keep their headless answers so the capability refresh takes the same
+      * branches as the node build. */
+@@ -497,7 +504,7 @@ void isaac_room_test(CpuState *cpu, const char *line) {
+     if (probe_u32(game + 0x1b83cu) == 0u) isaac_w32(game + 0x18318u, oslot);
+ }
+ 
+-#ifndef ISAAC_WEB   /* the fake, headless GL; host_gl_webgl.c is the web build's */
++#ifndef ISAAC_REAL_GL   /* the fake, headless GL; host_gl_webgl.c is the web build's */
+ /* void glClear(GLbitfield mask) -- cdecl. Called once at 0x00a6b9e1 with
+  * 0x4000 (GL_COLOR_BUFFER_BIT); the return value is discarded. */
+ void imp_opengl32__glClear(CpuState *restrict cpu) {
+@@ -954,7 +961,7 @@ void imp_opengl32__glViewport(CpuState *restrict cpu) {
+     cpu->EAX = 0;
+ }
+ 
+-#endif /* !ISAAC_WEB */
++#endif /* !ISAAC_REAL_GL */
+ 
+ /* ================= TEMP instrumentation (remove after 0xa6b570 root cause) = */
+ void imp_kernel32__OutputDebugStringA(CpuState *restrict cpu) {
+diff --git a/scripts/recomp/host/src/host_shims_misc.c b/scripts/recomp/host/src/host_shims_misc.c
+index 7933f49..8339312 100644
+--- a/scripts/recomp/host/src/host_shims_misc.c
++++ b/scripts/recomp/host/src/host_shims_misc.c
+@@ -223,6 +223,21 @@ void imp_kernel32__GetCurrentProcessorNumber(CpuState *restrict cpu) {
+     cpu->EAX = 0;
+ }
+ 
++/* The directory the guest is told it runs from. In the browser this is
++ * Emscripten's getcwd(), "/", which the RAM-FS keys as its root c:/isaac/:
++ * the game then finds mods/ and data/ beside "/\\isaac.exe". A native host's
++ * real directory ("/home/...", "sdmc:/...") would key as c:/isaac/home/...
++ * and the engine would load no mods, so it answers "/" as well. */
++static char *guest_cwd(char *buf, size_t cap) {
++#ifdef ISAAC_NATIVE
++    if (cap < 2) return NULL;
++    buf[0] = '/'; buf[1] = 0;
++    return buf;
++#else
++    return getcwd(buf, cap);
++#endif
++}
++
+ /* GetModuleFileNameA/W(module, buffer, size).  The only module whose path can
+  * be answered honestly is the EXE itself (handle == base address): the wasm
+  * build has no on-disk DLLs.  Answer with <cwd>\isaac.exe -- a synthetic but
+@@ -238,7 +253,7 @@ static uint32_t module_file_name(CpuState *cpu, int wide) {
+         return 0;
+     }
+     char cwd[1024], path[2048];
+-    if (!getcwd(cwd, sizeof cwd)) { cpu->EAX = 0; return 0; }
++    if (!guest_cwd(cwd, sizeof cwd)) { cpu->EAX = 0; return 0; }
+     snprintf(path, sizeof path, "%s\\isaac.exe", cwd);
+     if (!isaac_is_guest_va(lpBuffer) || !isaac_is_guest_va(lpBuffer + nSize - 1)) {
+         cpu->EAX = 0;
+@@ -282,6 +297,24 @@ void imp_kernel32__GetTempPathA(CpuState *restrict cpu) {
+ /* GlobalAlloc/Free/Lock/Unlock: the handle is the pointer (single,
+  * non-moveable allocation made with the host allocator).  Raw allocation is
+  * a platform primitive per the port policy; zeroing honours GMEM_ZEROINIT. */
++#ifdef ISAAC_NATIVE
++/* Native: a host malloc pointer is not guest-addressable, so the handle
++ * comes from the guest arena instead. */
++extern uint32_t isaac_guest_alloc(uint32_t n);
++extern void     isaac_guest_free(uint32_t p);
++void imp_kernel32__GlobalAlloc(CpuState *restrict cpu) {
++    uint32_t flags = isaac_arg(cpu, 0), size = isaac_arg(cpu, 1);
++    uint32_t p = isaac_guest_alloc(size ? size : 1);
++    if (p && (flags & 0x40u))                /* GMEM_ZEROINIT */
++        memset(isaac_g(p), 0, size);
++    cpu->EAX = p;
++}
++void imp_kernel32__GlobalFree(CpuState *restrict cpu) {
++    uint32_t p = isaac_arg(cpu, 0);
++    if (p) isaac_guest_free(p);
++    cpu->EAX = 0;
++}
++#else
+ void imp_kernel32__GlobalAlloc(CpuState *restrict cpu) {
+     uint32_t flags = isaac_arg(cpu, 0), size = isaac_arg(cpu, 1);
+     void *p = malloc(size ? size : 1);
+@@ -294,6 +327,7 @@ void imp_kernel32__GlobalFree(CpuState *restrict cpu) {
+     free(p);
+     cpu->EAX = 0;
+ }
++#endif
+ void imp_kernel32__GlobalLock(CpuState *restrict cpu) {
+     cpu->EAX = isaac_arg(cpu, 0);            /* handle == pointer already */
+ }
+@@ -382,7 +416,7 @@ void imp_kernel32__GetEnvironmentVariableA(CpuState *restrict cpu) {
+ void imp_kernel32__GetCurrentDirectoryA(CpuState *restrict cpu) {
+     uint32_t nSize = isaac_arg(cpu, 0), lpBuffer = isaac_arg(cpu, 1);
+     char cwd[1024];
+-    if (!getcwd(cwd, sizeof cwd)) {
++    if (!guest_cwd(cwd, sizeof cwd)) {
+         cpu->EAX = 0;
+         isaac_w32(ISAAC_TEB_VA + 0x34, 3u);         /* ERROR_PATH_NOT_FOUND */
+         return;
+diff --git a/scripts/recomp/host/src/host_shims_win.c b/scripts/recomp/host/src/host_shims_win.c
+index c261b4f..d2c3bf4 100644
+--- a/scripts/recomp/host/src/host_shims_win.c
++++ b/scripts/recomp/host/src/host_shims_win.c
+@@ -920,7 +920,7 @@ void isaac_render_skipped(CpuState *restrict cpu) { (void)cpu; }
+ #endif
+ /* BOOL SwapBuffers(HDC) -- gdi32, 4 bytes. One call per presented frame. */
+ void imp_gdi32__SwapBuffers(CpuState *restrict cpu) {
+-#ifdef ISAAC_WEB
++#ifdef ISAAC_REAL_GL
+     { extern void isaac_web_present(void); isaac_web_present(); }
+ #endif
+     (void)isaac_arg(cpu, 0);
+@@ -1094,10 +1094,21 @@ void isaac_input_mouse_button(int button, int down) {
+ }
+ uint32_t isaac_input_queued(void) { return g_msgq_count; }
+ uint32_t isaac_input_dropped(void) { return g_input_dropped; }
++#ifdef ISAAC_NATIVE
++/* Native: the driver installs a C poller in place of Module.isaacInputPoll
++ * (same contract: fill out[4] and return 1 per event, 0 when none is due). */
++typedef int (*isaac_input_poll_fn)(int frame, int32_t *out);
++static isaac_input_poll_fn g_input_poll_hook;
++void isaac_input_set_poll_hook(isaac_input_poll_fn fn) { g_input_poll_hook = fn; }
++static int isaac_input_poll_js(int frame, int32_t *out) {
++    return g_input_poll_hook ? g_input_poll_hook(frame, out) : 0;
++}
++#else
+ EM_JS(int, isaac_input_poll_js, (int frame, int32_t *out), {
+     if (typeof Module.isaacInputPoll !== "function") return 0;
+     return Module.isaacInputPoll(frame, out) ? 1 : 0;
+ });
++#endif
+ static void input_poll_page(void) {
+     int32_t ev[4];
+     for (unsigned n = 0; n < 64; ++n) {
+@@ -1168,7 +1179,13 @@ void imp_user32__PeekMessageW(CpuState *restrict cpu) {
+     input_poll_page();
+     if (msgq_read_into(msg, hwnd, min, max, flags)) { cpu->EAX = 1; return; }
+     int cap = frame_cap();
+-    if (cap > 0 && (int)g_frames_presented >= cap && !g_quit_sent && !g_msgq_count && msg &&
++#ifdef ISAAC_NATIVE
++    extern int isaac_native_quit_requested(void);
++    int quit_now = (cap > 0 && (int)g_frames_presented >= cap) || isaac_native_quit_requested();
++#else
++    int quit_now = cap > 0 && (int)g_frames_presented >= cap;
++#endif
++    if (quit_now && !g_quit_sent && !g_msgq_count && msg &&
+         isaac_is_guest_va(msg + 27u)) {
+         /* MSG { HWND hwnd; UINT message; WPARAM wParam; LPARAM lParam;
+          *       DWORD time; POINT pt; } -- WM_QUIT (0x12) */
+diff --git a/scripts/recomp/host/src/host_shims_xinput.c b/scripts/recomp/host/src/host_shims_xinput.c
+index 4e85a0e..97503e4 100644
+--- a/scripts/recomp/host/src/host_shims_xinput.c
++++ b/scripts/recomp/host/src/host_shims_xinput.c
+@@ -56,6 +56,13 @@ EM_JS(void, isaac_xinput_rumble_js, (int slot, int left, int right), {
+     var f = Module.isaacPadRumble;
+     if (typeof f === "function") { try { f(slot, left, right); } catch (e) { /* rumble is decoration */ } }
+ });
++#elif defined(ISAAC_NATIVE)
++/* Native: the platform layer answers with the same XINPUT_STATE bytes (the
++ * Switch pad); without one, no controller is connected. */
++__attribute__((weak)) int isaac_native_pad_state(int slot, uint8_t *out) { (void)slot; (void)out; return 0; }
++__attribute__((weak)) void isaac_native_pad_rumble(int slot, int left, int right) { (void)slot; (void)left; (void)right; }
++static int isaac_xinput_state_js(int slot, uint8_t *out) { return isaac_native_pad_state(slot, out); }
++static void isaac_xinput_rumble_js(int slot, int left, int right) { isaac_native_pad_rumble(slot, left, right); }
+ #else
+ static int isaac_xinput_state_js(int slot, uint8_t *out) { (void)slot; (void)out; return 0; }
+ static void isaac_xinput_rumble_js(int slot, int left, int right) { (void)slot; (void)left; (void)right; }
+diff --git a/scripts/recomp/host/src/host_trap.c b/scripts/recomp/host/src/host_trap.c
+index 425aae4..e690c11 100644
+--- a/scripts/recomp/host/src/host_trap.c
++++ b/scripts/recomp/host/src/host_trap.c
+@@ -133,7 +133,7 @@ void isaac_dump_trap_context(const CpuState *cpu, const char *tag) {
+ __attribute__((weak)) void isaac_module_report(void) {}
+ __attribute__((weak)) void isaac_heap_report(void) {}
+ 
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(ISAAC_NATIVE)
+ #include <emscripten.h>
+ #endif
+ 
+@@ -376,7 +376,7 @@ void isaac_stub_report(void) {
+       extern uint32_t isaac_input_dropped(void);
+       isaac_log("[isaac][input] %u messages dispatched to the WndProc, %u still queued, %u dropped (queue full)",
+                 isaac_input_dispatched(), isaac_input_queued(), isaac_input_dropped()); }
+-#ifdef ISAAC_WEB
++#ifdef ISAAC_REAL_GL
+     { extern void isaac_web_gl_report(void); isaac_web_gl_report();
+       extern void isaac_gl_report(void); isaac_gl_report(); }
+ #endif
+diff --git a/scripts/recomp/lift/boot_integration.c b/scripts/recomp/lift/boot_integration.c
+index 6aa6b68..eb962c7 100644
+--- a/scripts/recomp/lift/boot_integration.c
++++ b/scripts/recomp/lift/boot_integration.c
+@@ -35,7 +35,7 @@ int isaac_place_image(const uint8_t *blob, uint32_t len) {
+     memcpy(&n, idx + 8 * i + 4, 4);
+     if (va < ISAAC_IMAGE_BASE || (uint64_t)va + n > ISAAC_IMAGE_END) return -3;
+     if (body + n > blob + len) return -4;
+-    memcpy((void *)(uintptr_t)va, body, n);
++    memcpy(isaac_g(va), body, n);
+     body += n;
+     placed += n;
+   }
+@@ -52,14 +52,14 @@ int isaac_place_image(const uint8_t *blob, uint32_t len) {
+ #define GUARD_PAT 0xA5C3D200u
+ 
+ void isaac_guard_arm(void) {
+-  uint32_t *p = (uint32_t *)(uintptr_t)ISAAC_GUARD_VA;
++  uint32_t *p = (uint32_t *)isaac_g(ISAAC_GUARD_VA);
+   uint32_t n = ISAAC_GUARD_SIZE / 4;
+   for (uint32_t i = 0; i < n; ++i) p[i] = GUARD_PAT ^ i;
+ }
+ 
+ /* Returns the number of corrupted words, 0 if intact. */
+ uint32_t isaac_guard_check(void) {
+-  const uint32_t *p = (const uint32_t *)(uintptr_t)ISAAC_GUARD_VA;
++  const uint32_t *p = (const uint32_t *)isaac_g(ISAAC_GUARD_VA);
+   uint32_t n = ISAAC_GUARD_SIZE / 4, bad = 0, first = 0;
+   for (uint32_t i = 0; i < n; ++i) {
+     if (p[i] != (GUARD_PAT ^ i)) {
+@@ -78,8 +78,15 @@ uint32_t isaac_guard_check(void) {
+  * rather than each being individually plausible. */
+ int isaac_layout_check(void) {
+   int bad = 0;
++#ifdef ISAAC_NATIVE
++  /* Native: host statics and malloc live outside the guest window by
++   * construction; report their distance from the base instead. */
++  uint64_t host_probe = (uint64_t)((uintptr_t)&g_image_loaded - (uintptr_t)recomp_mem_base);
++  uint64_t heap_probe = (uint64_t)((uintptr_t)malloc(64) - (uintptr_t)recomp_mem_base);
++#else
+   uint32_t host_probe = (uint32_t)(uintptr_t)&g_image_loaded;
+   uint32_t heap_probe = (uint32_t)(uintptr_t)malloc(64);
++#endif
+   printf("layout:\n");
+   printf("  image           0x%08x .. 0x%08x\n", ISAAC_IMAGE_BASE, ISAAC_IMAGE_END);
+   printf("  guest heap      0x%08x .. 0x%08x\n", ISAAC_HEAP_VA,
+@@ -90,9 +97,9 @@ int isaac_layout_check(void) {
+          ISAAC_SHIM_BASE + ISAAC_SHIM_STRIDE * isaac_import_count);
+   printf("  guard           0x%08x .. 0x%08x\n", ISAAC_GUARD_VA,
+          ISAAC_GUARD_VA + ISAAC_GUARD_SIZE);
+-  printf("  host static     0x%08x   (GLOBAL_BASE must be 0x%08x)\n",
+-         host_probe, ISAAC_HOST_BASE_VA);
+-  printf("  host malloc     0x%08x\n", heap_probe);
++  printf("  host static     0x%08llx   (GLOBAL_BASE must be 0x%08x)\n",
++         (unsigned long long)host_probe, ISAAC_HOST_BASE_VA);
++  printf("  host malloc     0x%08llx\n", (unsigned long long)heap_probe);
+   printf("  dispatch entries %u\n", G_NDISPATCH);
+   if (host_probe < ISAAC_HOST_BASE_VA) {
+     printf("  FAIL host static data is below 0x%08x -- a guest pointer can "
+diff --git a/scripts/recomp/lift/recomp_rt.c b/scripts/recomp/lift/recomp_rt.c
+index 7d723f0..9ce04b2 100644
+--- a/scripts/recomp/lift/recomp_rt.c
++++ b/scripts/recomp/lift/recomp_rt.c
+@@ -138,7 +138,7 @@ uint32_t recomp_other_out(CpuState *s, uint32_t port,
+ #define ISAAC_CPUID_SCRATCH_VA 0x0e004000u
+ 
+ static uint32_t *recomp_cpuid_record(uint32_t leaf) {
+-  uint32_t *rec = (uint32_t *)(uintptr_t)ISAAC_CPUID_SCRATCH_VA;
++  uint32_t *rec = (uint32_t *)RECOMP_PTR(ISAAC_CPUID_SCRATCH_VA);
+   uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
+   switch (leaf) {
+     case 0x00000000u:
+@@ -175,7 +175,8 @@ static uint32_t *recomp_cpuid_record(uint32_t leaf) {
+   uint32_t recomp_other_##NAME(CpuState *s,          \
+                                                      uint32_t leaf) {      \
+     (void)s;                                                              \
+-    return (uint32_t)(uintptr_t)recomp_cpuid_record(leaf);                \
++    (void)recomp_cpuid_record(leaf);                                      \
++    return ISAAC_CPUID_SCRATCH_VA;                                        \
+   }
+ 
+ DEF_CPUID(cpuid)

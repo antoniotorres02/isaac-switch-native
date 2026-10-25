@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/xreamm1/the-browsing-of-isaac",
+  "commit": "22be498c60aad2f8abcf010cd408422385fb58a3",
+  "license": "GPL-3.0-or-later",
+  "checkout": "build/browsing-port/repo",
+  "game_pe_sha256": "B4743967F3D31050F7B4222E42AC6BEAE6A0B7850B1F1ADAAC07EF7B94D01EC8",
+  "upstream_recorded_pe_sha256": [
+    "5129DF723E645DAAEA59514394195F3EA1DCE1671BB0433D724648A845017200",
+    "1FBA9A37BCEBF9276C9A80372E8C4DCAD59C8F652D2FD41727B396DCDCD6B89C"
+  ],
+  "toolchain": {
+    "ghidra": "12.1.2 (ghidra_12.1.2_PUBLIC_20260605.zip, sha256 b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d)",
+    "pypcode": "4.0.1",
+    "emscripten": "6.0.5",
+    "lua": "5.3.3 (lua-5.3.3.tar.gz, sha256 5113c06884f7de453ce57702abaac1d618307f33f6789fa870e87a59d772aca2)"
+  }
+}

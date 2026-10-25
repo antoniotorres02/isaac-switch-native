@@ -1,0 +1,17 @@
+# Everything built from the game stays here: upstream checkout, lifted C,
+# memory image, game bundle, executables, NROs, saves, logs.
+build/
+
+# Never commit game or console binaries, keys or saves.
+*.exe
+*.dll
+*.nro
+*.nso
+*.nacp
+*.elf
+*.keys
+*.dat
+*.a
+*.segs.bin
+__pycache__/
+*.pyc
