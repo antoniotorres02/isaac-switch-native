@@ -15,7 +15,14 @@ emulator and not a remake. On a Switch running homebrew:
   them on and off;
 - the buttons drawn on screen are the Switch ones, A accepts and B goes back
   in menus (both can be turned off in `settings.ini`), and holding +
-  restarts a run.
+  restarts a run;
+- a launch screen checks that the game's files are on the card before it offers
+  Play;
+- optionally, the console signs in to Steam with a QR code from the Steam app and
+  downloads your Steam Cloud saves, with no PC involved. **Uploading at exit does
+  not work yet.** It is an unofficial Steam client: read the
+  [risks](STEAM-CLOUD.md#risk), or build with `--no-steam`, which leaves all of it
+  out.
 
 **This repository contains no game code, data or assets, and no tool or
 method for removing the game's copy protection.** You need your own
@@ -27,6 +34,7 @@ purchased copy of the game, and you build everything yourself from it.
 | --- | --- |
 | [BUILDING.md](BUILDING.md) | Requirements, the upstream pipeline, the PC build and the Switch NRO |
 | [PLAYING.md](PLAYING.md) | Installing on the Switch, controls, `settings.ini`, PC saves, adding and toggling mods, playing on PC, troubleshooting |
+| [STEAM-CLOUD.md](STEAM-CLOUD.md) | Steam sign-in and Cloud saves from the console: how it works, what was measured, what does not work yet, the risks, and building without it |
 | [DESIGN.md](DESIGN.md) | How the host works, what was changed and why, and what was measured on hardware |
 
 ## Inspiration and credits
@@ -40,7 +48,7 @@ support) does the hard part. This repository adds a native host for that
 lifted C: PC and Switch platform layers, the fixes the native build needed
 (listed in [DESIGN.md](DESIGN.md#corrections-to-the-upstream-pipeline)) and
 the Switch-specific features. It works on a checkout of upstream at a pinned
-commit, with a one-line local change to its PE hash check and one patch to
+commit, with a one-line local change to its PE hash check and a few patches to
 its host sources (`host/patches/`).
 
 Also used or built on:

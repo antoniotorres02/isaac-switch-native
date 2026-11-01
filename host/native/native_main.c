@@ -235,6 +235,45 @@ static void seed_mod_dir(const char *disk, const char *rel) {
     closedir(d);
 }
 
+/* Each mod's <directory> from its metadata.xml, where it differs from the
+ * folder. The engine keeps a mod's data in data/<directory>/ (a Steam PC:
+ * data/mod config menu/ for the folder mod config menu_3701683951). Builds
+ * before native_stream_path.c never read the metadata and kept it in
+ * data/<folder>/; restore_saves shows such a folder under the new name. */
+#define MAX_MOD_DIRS 256
+static struct { char folder[256], dir[256]; } g_mod_dirs[MAX_MOD_DIRS];
+static unsigned g_mod_ndirs;
+static void note_mod_dir(const char *disk, const char *folder) {
+    char path[1100];
+    uint32_t len = 0;
+    snprintf(path, sizeof path, "%s/metadata.xml", disk);
+    uint8_t *buf = read_file(path, &len);
+    if (!buf) return;
+    char *text = malloc(len + 1);
+    if (text) {
+        memcpy(text, buf, len);
+        text[len] = 0;
+        const char *a = strstr(text, "<directory>"), *b = a ? strstr(a, "</directory>") : NULL;
+        if (a && b) {
+            a += strlen("<directory>");
+            while (a < b && (*a == ' ' || *a == '\t' || *a == '\n' || *a == '\r')) ++a;
+            while (b > a && (b[-1] == ' ' || b[-1] == '\t' || b[-1] == '\n' || b[-1] == '\r')) --b;
+            size_t n = (size_t)(b - a);
+            int safe = n && n < sizeof g_mod_dirs[0].dir && !memchr(a, '/', n) && !memchr(a, '\\', n)
+                       && !(n == 2 && a[0] == '.' && a[1] == '.') && !(n == 1 && a[0] == '.');
+            if (safe && g_mod_ndirs < MAX_MOD_DIRS && strlen(folder) < sizeof g_mod_dirs[0].folder
+                && (strlen(folder) != n || memcmp(folder, a, n))) {
+                snprintf(g_mod_dirs[g_mod_ndirs].folder, sizeof g_mod_dirs[0].folder, "%s", folder);
+                memcpy(g_mod_dirs[g_mod_ndirs].dir, a, n);
+                g_mod_dirs[g_mod_ndirs].dir[n] = 0;
+                ++g_mod_ndirs;
+            }
+        }
+        free(text);
+    }
+    free(buf);
+}
+
 /* The on/off choice made in the game's mods menu. The engine writes
  * disable.it into c:/isaac/mods/<folder>/ to turn a mod off and deletes it to
  * turn it back on; the choice applies at the next start. The instance's mods/
@@ -321,12 +360,43 @@ static void seed_mods(void) {
             continue;
         }
         seed_mod_dir(dir, e->d_name);
+        note_mod_dir(dir, e->d_name);
         ++g_mods;
     }
     closedir(d);
     printf("[native] mods: %u enabled (%u off), %u file entries, %.1f MB%s\n", g_mods, g_mods_off,
            g_mod_files, (double)g_mod_bytes / 1048576.0,
            g_mod_refused ? ", some REFUSED (file table full?)" : "");
+}
+
+/* ISAAC_NATIVE_BENCH=<scenario>: the bench mod (bench/isaac-bench, from
+ * ISAAC_NATIVE_BENCH_MOD=<dir>; romfs:/isaac-bench on the Switch) is mounted
+ * like any enabled mod, its main.lua opened by BENCH_SCENARIO = "<scenario>". */
+static void seed_bench_mod(const char *dir, const char *scenario) {
+    static const char *files[] = { "metadata.xml", "main.lua" };
+    for (size_t k = 0; k < sizeof files / sizeof files[0]; ++k) {
+        char src[1100];
+        uint32_t len = 0;
+        snprintf(src, sizeof src, "%s/%s", dir, files[k]);
+        uint8_t *buf = read_file(src, &len), *data = buf;
+        if (!buf) { fprintf(stderr, "[native] bench mod: cannot read %s\n", src); return; }
+        if (k == 1) {
+            char head[128];
+            int h = snprintf(head, sizeof head, "BENCH_SCENARIO = \"%s\"\n", scenario);
+            data = malloc((size_t)h + len);
+            memcpy(data, head, (size_t)h);
+            memcpy(data + h, buf, len);
+            len += (uint32_t)h;
+        }
+        for (size_t i = 0; i < sizeof MOD_ROOTS / sizeof MOD_ROOTS[0]; ++i) {
+            char key[1400];
+            snprintf(key, sizeof key, "%sisaac-bench/%s", MOD_ROOTS[i], files[k]);
+            isaac_fs_seed(key, data, len);
+        }
+        if (data != buf) free(data);
+        free(buf);
+    }
+    printf("[native] bench mod mounted, scenario %s\n", scenario);
 }
 
 /* play.mjs DEFAULT_OPTIONS: the beta notice and data-collection prompt are
@@ -410,7 +480,11 @@ static int unlink_saved(const char *key, const char *src) {
     return 1;
 }
 
-static void restore_tree(const char *rel) {
+/* The files under <save dir>/<rel>, seeded as <key>/...: the same path, or
+ * an old mod data folder under its new name. */
+static void restore_tree_as(const char *rel, const char *key);
+static void restore_tree(const char *rel) { restore_tree_as(rel, rel); }
+static void restore_tree_as(const char *rel, const char *key) {
     char dir[1200];
     snprintf(dir, sizeof dir, "%s%s%s", g_save_dir, *rel ? "/" : "", rel);
     DIR *d = opendir(dir);
@@ -421,16 +495,17 @@ static void restore_tree(const char *rel) {
         /* The engine rewrites every mod's metadata.xml at start; restoring
          * them would list mods that are no longer installed. */
         if (!strncmp(rel, "mods/", 5) && !strcmp(e->d_name, "metadata.xml")) continue;
-        char r[1024], abs[1300];
+        char r[1024], k[1024], abs[1300];
         snprintf(r, sizeof r, "%s%s%s", rel, *rel ? "/" : "", e->d_name);
+        snprintf(k, sizeof k, "%s%s%s", key, *key ? "/" : "", e->d_name);
         snprintf(abs, sizeof abs, "%s/%s", g_save_dir, r);
         struct stat st;
         if (stat(abs, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { restore_tree(r); continue; }
+        if (S_ISDIR(st.st_mode)) { restore_tree_as(r, k); continue; }
         uint32_t len = 0;
         uint8_t *buf = read_file(abs, &len);
         if (!buf && st.st_size) continue;
-        if (isaac_fs_seed(r, buf, st.st_size ? len : 0)) ++g_restored;
+        if (isaac_fs_seed(k, buf, st.st_size ? len : 0)) ++g_restored;
         free(buf);
     }
     closedir(d);
@@ -505,6 +580,8 @@ int isaac_native_main(int argc, char **argv) {
            (double)g_seed_bytes / 1048576.0, g_seed_failed ? ", some FAILED" : "");
     const char *mods = getenv("ISAAC_NATIVE_MODS");
     if (mods && *mods == '1') seed_mods();
+    const char *bench = getenv("ISAAC_NATIVE_BENCH"), *bench_mod = getenv("ISAAC_NATIVE_BENCH_MOD");
+    if (bench && *bench && bench_mod && *bench_mod) seed_bench_mod(bench_mod, bench);
     if (!getenv("ISAAC_NATIVE_NO_OPTIONS"))
         printf("[native] seed options.ini -> %s\n",
                isaac_fs_seed(OPTIONS_KEY, (const uint8_t *)DEFAULT_OPTIONS,
@@ -513,6 +590,18 @@ int isaac_native_main(int argc, char **argv) {
     if (g_save_dir[0]) {
         isaac_fs_set_persist_hooks(persist, unlink_saved);
         restore_tree("");
+        for (unsigned i = 0; i < g_mod_ndirs; ++i) {
+            char old_dir[PATH_MAX + 300], new_dir[PATH_MAX + 300], rel[600], key[600];
+            struct stat st;
+            snprintf(old_dir, sizeof old_dir, "%s/data/%s", g_save_dir, g_mod_dirs[i].folder);
+            snprintf(new_dir, sizeof new_dir, "%s/data/%s", g_save_dir, g_mod_dirs[i].dir);
+            if (stat(new_dir, &st) == 0 || stat(old_dir, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+            snprintf(rel, sizeof rel, "data/%s", g_mod_dirs[i].folder);
+            snprintf(key, sizeof key, "data/%s", g_mod_dirs[i].dir);
+            restore_tree_as(rel, key);
+            printf("[native] mod data: data/%s/ (older builds) read as data/%s/\n",
+                   g_mod_dirs[i].folder, g_mod_dirs[i].dir);
+        }
         printf("[native] ISAAC_SAVE_DIR=%s: %u saved file(s) restored\n", g_save_dir, g_restored);
     }
 

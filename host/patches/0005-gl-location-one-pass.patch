@@ -1,0 +1,76 @@
+--- a/scripts/recomp/host/src/host_gl_cache.c	2026-10-26 12:44:02.686438837 +0000
++++ b/scripts/recomp/host/src/host_gl_cache.c	2026-10-26 12:44:02.698325919 +0000
+@@ -259,20 +259,46 @@
+ /* ---- program locations --------------------------------------------------- */
+ #define GLC_LOC 4096
+ #define GLC_NAME 48
+-typedef struct { uint32_t prog; uint8_t kind, live; char name[GLC_NAME]; int32_t loc; } glc_loc;
++typedef struct { uint32_t prog; uint8_t kind, live, len; char name[GLC_NAME]; int32_t loc; } glc_loc;
+ static glc_loc g_loc[GLC_LOC];
+ static glc_loc g_loc_scratch[GLC_LOC];    /* the rebuild buffer for a flush (not the wasm stack) */
+-static uint32_t loc_hash(uint32_t prog, uint8_t kind, const char *name) {
+-    uint32_t h = 2166136261u ^ prog ^ ((uint32_t)kind << 24);
+-    for (; *name; ++name) { h ^= (uint8_t)*name; h *= 16777619u; }
++/* The hash and the length in one pass over the name (the game asks for a
++ * location by name on every draw); GLC_NAME or more is too long to keep. */
++static uint32_t loc_hash(uint32_t prog, uint8_t kind, const char *name, uint32_t *len) {
++    uint32_t h = 2166136261u ^ prog ^ ((uint32_t)kind << 24), n = 0;
++    for (; name[n] && n < GLC_NAME; ++n) { h ^= (uint8_t)name[n]; h *= 16777619u; }
++    *len = n;
+     return h & (GLC_LOC - 1u);
+ }
++static int loc_same(const glc_loc *e, uint32_t prog, uint8_t kind, const char *name, uint32_t len) {
++    return e->prog == prog && e->kind == kind && e->len == len && memcmp(e->name, name, len) == 0;
++}
++/* In front of the table, the slot the same name pointer found last time:
++ * the game asks with the same strings over and over. The entry is checked
++ * against the name in full, so a reused or rewritten string, or a flush that
++ * moved the slots, only falls through to the hash. */
++#define GLC_FRONT 1024
++typedef struct { const char *name; uint32_t prog; uint16_t slot; uint8_t kind; } glc_front;
++static glc_front g_front[GLC_FRONT];
++static inline uint32_t front_slot(uint32_t prog, uint8_t kind, const char *name) {
++    return (uint32_t)(((uintptr_t)name >> 2) ^ prog * 0x9E3779B1u ^ kind) & (GLC_FRONT - 1u);
++}
+ int isaac_glc_loc_get(uint32_t prog, uint8_t kind, const char *name, int32_t *loc) {
+-    if (!name || strlen(name) >= GLC_NAME) { ++g_loc_miss; return 0; }
+-    uint32_t h = loc_hash(prog, kind, name);
++    uint32_t len;
++    if (!name) { ++g_loc_miss; return 0; }
++    glc_front *f = &g_front[front_slot(prog, kind, name)];
++    if (f->name == name && f->prog == prog && f->kind == kind) {
++        const glc_loc *e = &g_loc[f->slot];
++        if (e->live && e->prog == prog && e->kind == kind && memcmp(e->name, name, e->len + 1u) == 0) {
++            *loc = e->loc; ++g_loc_hit; return 1;
++        }
++    }
++    uint32_t h = loc_hash(prog, kind, name, &len);
++    if (len >= GLC_NAME) { ++g_loc_miss; return 0; }
+     for (uint32_t n = 0; n < GLC_LOC; ++n, h = (h + 1u) & (GLC_LOC - 1u)) {
+         if (!g_loc[h].live) break;
+-        if (g_loc[h].prog == prog && g_loc[h].kind == kind && strcmp(g_loc[h].name, name) == 0) {
++        if (loc_same(&g_loc[h], prog, kind, name, len)) {
++            f->name = name; f->prog = prog; f->kind = kind; f->slot = (uint16_t)h;
+             *loc = g_loc[h].loc; ++g_loc_hit; return 1;
+         }
+     }
+@@ -280,12 +306,15 @@
+     return 0;
+ }
+ void isaac_glc_loc_put(uint32_t prog, uint8_t kind, const char *name, int32_t loc) {
+-    if (!name || strlen(name) >= GLC_NAME) return;
+-    uint32_t h = loc_hash(prog, kind, name);
++    uint32_t len;
++    if (!name) return;
++    uint32_t h = loc_hash(prog, kind, name, &len);
++    if (len >= GLC_NAME) return;
+     for (uint32_t n = 0; n < GLC_LOC; ++n, h = (h + 1u) & (GLC_LOC - 1u)) {
+-        if (!g_loc[h].live || (g_loc[h].prog == prog && g_loc[h].kind == kind && strcmp(g_loc[h].name, name) == 0)) {
++        if (!g_loc[h].live || loc_same(&g_loc[h], prog, kind, name, len)) {
+             g_loc[h].live = 1; g_loc[h].prog = prog; g_loc[h].kind = kind; g_loc[h].loc = loc;
+-            strcpy(g_loc[h].name, name);
++            g_loc[h].len = (uint8_t)len;
++            memcpy(g_loc[h].name, name, len); g_loc[h].name[len] = 0;
+             return;
+         }
+     }

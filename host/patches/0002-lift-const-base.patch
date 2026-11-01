@@ -1,0 +1,35 @@
+--- a/scripts/recomp/lift/recomp_rt.h	2026-10-26 12:16:43.644914433 +0000
++++ b/scripts/recomp/lift/recomp_rt.h	2026-10-26 12:16:43.654889676 +0000
+@@ -32,10 +32,21 @@
+ #if RECOMP_MEM_IDENTITY
+ #define RECOMP_PTR(a) ((void *)(uintptr_t)(uint32_t)(a))
+ #else
+-extern uint8_t *recomp_mem_base;
+-#define RECOMP_PTR(a) ((void *)(recomp_mem_base + (uint32_t)(a)))
++/* The base is set once, before any lifted code runs, and never moves. The
++ * lifted units and the runtime read it through a const alias: without
++ * strict aliasing every guest store could otherwise have changed it, so
++ * GCC reloaded it after each one (about a third of the instructions of a
++ * hot lifted function). native_mem.c writes the real, non-const object;
++ * these units never do. */
++extern uint8_t *const recomp_mem_base_ro __asm__("recomp_mem_base");
++#define RECOMP_PTR(a) ((void *)(recomp_mem_base_ro + (uint32_t)(a)))
+ #endif
+ 
++/* Everything is linked statically into one executable: the globals these
++ * units share (g_reentry_eip, recomp_jmp_pending, the base) are reached
++ * PC-relative instead of through the GOT. */
++#pragma GCC visibility push(hidden)
++
+ /* Optional bounds check.  Off by default -- a wasm OOB trap names only a
+  * function, and finding WHICH guest access faulted otherwise means
+  * bisecting by hand.  Build the suspect TU with -DRECOMP_MEM_CHECK=1 and
+@@ -424,6 +435,8 @@
+ void recomp_run_pending(struct CpuState *s);
+ void recomp_unreachable(struct CpuState *s, uint32_t va);
+ 
++#pragma GCC visibility pop
++
+ #ifdef __cplusplus
+ }
+ #endif

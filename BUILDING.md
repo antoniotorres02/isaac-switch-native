@@ -34,7 +34,7 @@ GAME="$HOME/.local/share/Steam/steamapps/common/The Binding of Isaac Rebirth"
   its `.scratch/` (the game bundle) and 2.8 GB for `build/browsing-native/`
   (all profiles plus test runs).
 
-The pinned versions are also recorded in [host/upstream.json](host/upstream.json).
+The pinned versions are also recorded in [upstream.json](upstream.json).
 
 ## 2. The executable
 
@@ -222,16 +222,21 @@ lift)", with `isaac.segs.bin` and `instance_index.json` in its RomFS). It
 prints the NRO's SHA256 at the end. Installation is described in
 [PLAYING.md](PLAYING.md#installing-on-the-switch).
 
+To leave out everything that talks to Steam (Cloud sync, QR sign-in, the ownership
+check and the network code behind them), add `--no-steam`. The NRO goes to
+`build/browsing-native/switch-nosteam/`; see
+[STEAM-CLOUD.md](STEAM-CLOUD.md#building-without-steam).
+
 ## 7. Testing on hardware (developers)
 
 The runs in [DESIGN.md](DESIGN.md#measured-results) used the repository's
 test tools over the network (Sphaira's nxlink in Application mode; `nxlink`
-is the client from devkitPro's switch-tools):
+is devkitPro's client, kept here in `build/sdk-tools/`):
 
 ```sh
 python3 tools/probe_switch_nxlink.py --address <switch-ip>
 python3 tools/run_switch_tests.py --address <switch-ip> \
-  --nro build/browsing-native/switch/isaac-browsing.nro --nxlink /path/to/nxlink \
+  --nro build/browsing-native/switch/isaac-browsing.nro --nxlink build/sdk-tools/nxlink \
   --graphics --audio --return-to-sphaira --timeout 600
 ```
 
@@ -243,3 +248,11 @@ player's saves. Probe nxlink with the UDP discovery tool above before sending;
 never probe it by opening a TCP connection and closing it without completing
 the protocol, because Sphaira's receiver then waits for a transfer that never
 comes.
+
+Benchmarks use the same transport: `tools/bench_native.py switch <scenario>`
+sends the NRO with `--bench` and reads its `BENCH` line (see
+[DESIGN.md](DESIGN.md#performance)). `build_native.py --tag NAME` builds a
+variant in `build/browsing-native/<profile>-NAME/`. `--lift-flags`,
+`--host-flags` and `--ld-flags` add compiler and linker flags to it, and
+`--patches-upto N` builds a reference with only the first N patches (use it
+with `--out`).

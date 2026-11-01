@@ -1,0 +1,32 @@
+--- a/scripts/recomp/host/src/host_gl_webgl.c	2026-10-27 14:22:50.688782334 +0000
++++ b/scripts/recomp/host/src/host_gl_webgl.c	2026-10-27 14:23:18.334071813 +0000
+@@ -685,12 +685,29 @@
+     rp_issue(xy[0], xy[1]);
+ }
+ #endif
++#ifdef ISAAC_NATIVE
++/* The lag is right for the footprint colour only. Mods read pixels too, with
++ * Sprite:GetTexel, which draws the sprite and reads one pixel back through
++ * the same GetPixel: External Item Descriptions compares a pedestal with the
++ * "?" sprite that way, point by point, to tell an alt-path "?" item. Served
++ * the previous read, every point of every item matched and every treasure
++ * room item counted as hidden. A read asked while Lua runs (a mod callback,
++ * native_lua_state.c) is an exact synchronous read, and the footprint's ring
++ * is left as it was. */
++int isaac_native_lua_running(void);
++#endif
+ GLFN(glReadPixels) {
+     ENTER;
+     isaac_glc_count_readpixels(A(0), A(1), A(2), A(3), A(4), A(4) == 0x1908u ? 4u : A(4) == 0x1907u ? 3u : 1u);   /* GL_RGBA / GL_RGB */
+     if (g_rp_logged < 3u) { ++g_rp_logged; isaac_readpixels_stack_js((int)A(0), (int)A(1), (int)A(2), (int)A(3)); }
+     uint8_t *dst = (uint8_t *)AP(6);
+     if (rp_mode() && A(2) == 1u && A(3) == 1u && A(4) == GL_RGBA && A(5) == GL_UNSIGNED_BYTE && dst) {
++#ifdef ISAAC_NATIVE
++        if (isaac_native_lua_running()) {
++            glReadPixels((GLint)A(0), (GLint)A(1), 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, dst);
++            RET0;
++        }
++#endif
+ #ifdef ISAAC_NATIVE_GL
+         if (isaac_glq_active() && rp_mode() == 1 && g_rp_have) {
+             uint32_t w = atomic_load(&g_rp_word);

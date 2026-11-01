@@ -1,0 +1,109 @@
+diff --color -ru a/scripts/recomp/host/src/host_gl_clientarrays.c b/scripts/recomp/host/src/host_gl_clientarrays.c
+--- a/scripts/recomp/host/src/host_gl_clientarrays.c	2026-10-26 15:25:39.972144221 +0000
++++ b/scripts/recomp/host/src/host_gl_clientarrays.c	2026-10-26 15:26:00.727943098 +0000
+@@ -97,6 +97,9 @@
+ 
+ #if defined(__EMSCRIPTEN__) || defined(ISAAC_NATIVE_GL)
+ #include <GLES3/gl3.h>
++#ifdef ISAAC_NATIVE_GL
++#include "native_glq.h"                /* the calls go through the render thread's queue */
++#endif
+ #else
+ /* Host-test build: the logic is exercised without a GL context. */
+ typedef unsigned int GLenum; typedef unsigned int GLuint; typedef int GLint;
+diff --color -ru a/scripts/recomp/host/src/host_gl_webgl.c b/scripts/recomp/host/src/host_gl_webgl.c
+--- a/scripts/recomp/host/src/host_gl_webgl.c	2026-10-26 15:25:39.969186362 +0000
++++ b/scripts/recomp/host/src/host_gl_webgl.c	2026-10-26 15:26:00.727943098 +0000
+@@ -34,6 +34,10 @@
+ #include "shim_decls.h"
+ 
+ #include <GLES3/gl3.h>
++#ifdef ISAAC_NATIVE_GL
++#include "native_glq.h"                /* the calls go through the render thread's queue */
++#include <stdatomic.h>
++#endif
+ #include <stdlib.h>                    /* round 60: getenv for the band switch, ahead of the report */
+ 
+ /* Round 60: a large upload goes in bands. Chrome's GL client stages every
+@@ -221,12 +225,31 @@
+ #endif
+ static uint8_t *g_present_buf;
+ static uint32_t g_present_cap;
++#ifdef ISAAC_NATIVE_GL
++static void drain_errors_cmd(const void *p) {
++    uint32_t present;
++    memcpy(&present, p, sizeof present);
++    GLenum err;
++    while ((err = glGetError()) != GL_NO_ERROR) {      /* on the render thread: straight to GL */
++        ++g_gl_errors;
++        if (g_gl_errors <= 20)
++            isaac_log("[isaac][gl] GL error 0x%x pending at present #%u", err, present);
++    }
++}
++#endif
+ void isaac_web_present(void) {
+     if (!isaac_web_gl_ready()) return;
+     ++g_present_count;
+     /* Round 37: glGetError was 1% of a throttled frame. GL errors are sticky
+      * until read, so draining every 64th present still catches any (the
+      * count is a lower bound); ISAAC_GL_CHECK=1 drains every present. */
++#ifdef ISAAC_NATIVE_GL
++    /* With the render thread, reading the errors would wait for the whole
++     * queue: that thread drains them itself. */
++    if (isaac_glq_active() && !gl_check_mode()) {
++        if ((g_present_count & 63u) == 1u) isaac_glq_post(drain_errors_cmd, &g_present_count, sizeof g_present_count);
++    } else
++#endif
+     if (gl_check_mode() || (g_present_count & 63u) == 1u) {
+         GLenum err;
+         while ((err = glGetError()) != GL_NO_ERROR) {
+@@ -647,12 +670,39 @@
+     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+     g_rp_fence[s] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+ }
++#ifdef ISAAC_NATIVE_GL
++/* With the render thread, the harvest and the next read run there too (a
++ * fence poll from the game thread would wait for the whole queue), and the
++ * newest harvested pixel comes back through g_rp_word: one more frame old. */
++static _Atomic uint32_t g_rp_word;
++static void rp_step_cmd(const void *p) {
++    GLint xy[2];
++    memcpy(xy, p, sizeof xy);
++    rp_harvest();
++    uint32_t w;
++    memcpy(&w, g_rp_px, 4);
++    atomic_store(&g_rp_word, w);
++    rp_issue(xy[0], xy[1]);
++}
++#endif
+ GLFN(glReadPixels) {
+     ENTER;
+     isaac_glc_count_readpixels(A(0), A(1), A(2), A(3), A(4), A(4) == 0x1908u ? 4u : A(4) == 0x1907u ? 3u : 1u);   /* GL_RGBA / GL_RGB */
+     if (g_rp_logged < 3u) { ++g_rp_logged; isaac_readpixels_stack_js((int)A(0), (int)A(1), (int)A(2), (int)A(3)); }
+     uint8_t *dst = (uint8_t *)AP(6);
+     if (rp_mode() && A(2) == 1u && A(3) == 1u && A(4) == GL_RGBA && A(5) == GL_UNSIGNED_BYTE && dst) {
++#ifdef ISAAC_NATIVE_GL
++        if (isaac_glq_active() && rp_mode() == 1 && g_rp_have) {
++            uint32_t w = atomic_load(&g_rp_word);
++            GLint xy[2] = { (GLint)A(0), (GLint)A(1) };
++            memcpy(dst, &w, 4);
++            isaac_glq_post(rp_step_cmd, xy, sizeof xy);
++            if (++g_rp_async == 1u)
++                isaac_log("[isaac][gl] glReadPixels 1x1: answered from the previous read, the next one runs on the render "
++                          "thread behind a fence (%u synchronous read(s) before)", g_rp_waited);
++            RET0;
++        }
++#endif
+         rp_harvest();
+         if (g_rp_have) {
+             memcpy(dst, g_rp_px, 4);
+@@ -670,6 +720,9 @@
+         }
+         glReadPixels((GLint)A(0), (GLint)A(1), 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, dst);
+         memcpy(g_rp_px, dst, 4);
++#ifdef ISAAC_NATIVE_GL
++        { uint32_t w; memcpy(&w, dst, 4); atomic_store(&g_rp_word, w); }
++#endif
+         g_rp_have = 1;
+         ++g_rp_waited;
+         RET0;

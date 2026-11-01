@@ -1,0 +1,35 @@
+--- a/scripts/recomp/host/src/host_snd_lazy.c	2026-10-26 12:28:31.480626450 +0000
++++ b/scripts/recomp/host/src/host_snd_lazy.c	2026-10-26 12:28:31.498626452 +0000
+@@ -37,6 +37,12 @@
+ static uint32_t g_snd_fill_target;         /* nonzero while a fill runs: the buffer it fills */
+ static uint32_t g_snd_deferred, g_snd_filled, g_snd_forgotten, g_snd_failed, g_snd_refused;
+ static uint64_t g_snd_bytes_deferred, g_snd_bytes_filled;
++/* Every guest free asks whether it held a record. A byte per 64 KiB of guest
++ * space says where a record has ever started, so the free of a block that
++ * never held one -- nearly every free -- skips the search. Never cleared: a
++ * stale mark only costs the search it would have done anyway. */
++#define SND_REGION_BITS 16
++static uint8_t g_snd_region[1u << (32 - SND_REGION_BITS)];
+ 
+ int isaac_snd_lazy_enabled(void) {
+     if (g_snd_mode < 0) {
+@@ -93,6 +99,7 @@
+     memmove(g_snd + i + 1, g_snd + i, (size_t)(g_snd_n - i) * sizeof *g_snd);
+     g_snd[i].ptr = ptr; g_snd[i].size = size; g_snd[i].path = copy;
+     ++g_snd_n;
++    g_snd_region[ptr >> SND_REGION_BITS] = 1u;
+     ++g_snd_deferred; g_snd_bytes_deferred += size;
+     if (g_snd_deferred == 1u)
+         isaac_log("[isaac][snd] a sound's samples are read when it is first played (ISAAC_SND_LAZY=0 reads them at load)");
+@@ -152,7 +159,10 @@
+ /* guest_free: the block [p, p + n) is free again; a buffer recorded in it was never written */
+ void isaac_snd_lazy_freed(uint32_t p, uint32_t n) {
+     if (!n) return;
+-    if (g_snd_n) {
++    uint32_t r0 = p >> SND_REGION_BITS, r1 = (p + n - 1u) >> SND_REGION_BITS;
++    int marked = r1 < r0 || r1 - r0 > 4u;                  /* wrapped or large: search */
++    for (uint32_t r = r0; !marked && r <= r1; ++r) marked = g_snd_region[r];
++    if (g_snd_n && marked) {
+         uint32_t i = snd_lower(p);
+         while (i < g_snd_n && g_snd[i].ptr < p + n) { snd_remove(i); ++g_snd_forgotten; }
+     }

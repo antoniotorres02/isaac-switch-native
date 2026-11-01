@@ -1,8 +1,29 @@
-# Design and measurements
+# Native host for the the-browsing-of-isaac lift (PC and Nintendo Switch)
 
-How the native host works, what was changed in the upstream pipeline and why,
-and what was measured on PC and on the Switch. For building and playing, see
-[BUILDING.md](BUILDING.md) and [PLAYING.md](PLAYING.md).
+This directory runs **The Binding of Isaac: Repentance+ PC v1.9.7.17**
+natively on x86-64 Linux and on the Nintendo Switch (libnx NRO). It reuses the
+C code that [the-browsing-of-isaac](https://github.com/xreamm1/the-browsing-of-isaac)
+lifts from the Windows executable (Ghidra P-code → C) and replaces that
+project's WebAssembly/browser host with a native one: EGL + GLES3 for
+graphics, OpenAL Soft for audio, a real filesystem for saves and mods, and the
+Switch pad mapped onto the game's own XInput controller path.
+
+The game is fully playable on the Switch: the PC saves and the Steam Workshop
+mods carry over, mods can be turned on and off from the in-game menu, and the
+buttons drawn on screen are the Switch ones.
+
+| Document | What it covers |
+| --- | --- |
+| [BUILDING.md](BUILDING.md) | Building everything from your own copy of the game: the PE, the upstream lift, the PC executable and the Switch NRO |
+| [PLAYING.md](PLAYING.md) | Installing on the Switch, controls, `settings.ini`, moving your PC saves, adding and toggling mods, playing on PC, troubleshooting |
+| [STEAM-CLOUD.md](STEAM-CLOUD.md) | Syncing the saves with the account's Steam Cloud from the console itself: provisioning, conflict rules, measured protocol, risks |
+| This file | How the host works, what was changed and why, and what was measured |
+
+> **Nothing from the game is in this repository, and nothing built from it may
+> be shared.** You need your own Steam copy of Repentance+. The lifted C, the
+> memory image (`isaac.segs.bin`) and therefore the NRO are derived from the
+> game's executable. Everyone has to build their own. The upstream code is
+> GPL-3.0-or-later, so a binary that combines it is under the GPL-3 as well.
 
 ## Layout
 
@@ -12,29 +33,38 @@ host/
   upstream.json                 pinned upstream commit, PE hashes and toolchain versions
   extra_code_pointer_starts.py  the 519 function entries the upstream lift misses
   import_pc_saves.py            Steam profile -> native save store
-  patches/0001-native-guest-window.patch   changes to the upstream host sources
+  steam_cloud_cm.py             Steam CM protocol: token provisioning, cloud read/write
+  patches/                      changes to the upstream host sources (0001-0007)
+  bench/isaac-bench/            the benchmark mod (tools/bench_native.py)
   native/
     native_main.c               entry, memory image, instance/RAM-FS seeding, saves, mods, clock
     native_mem.c                guest address window
     native_gl.c                 EGL context (pbuffer, GLFW window or Switch nwindow)
+    native_glq.c, native_glq.h  the render thread: GL calls through a command queue
     native_audio_al.c           OpenAL Soft backend for the host's audio hooks
     native_input.c              scripted input, game tick probe, injected keys
     native_window.c             PC window and keyboard/gamepad (GLFW)
     native_switch.c             Switch entry: pad, settings.ini, test protocol, heap hygiene
+    native_gamefiles.c          are the game's files on the card? (every build)
+    native_steamcm.c            Steam CM session: TLS, websocket, Cloud.* calls (Switch only)
+    native_steamsync.c          pull/push rules, state file, backups, conflict handling
+    native_steamproto.c         the protobuf fields and CM framing the client needs
+    native_zip.c                the ZIP wrapper Steam stores a cloud file in
+    native_sha1.c               file_sha
     native_glyphs.c             Switch button prompts (in-memory .anm2 rewrite)
     native_lua_ramfs.c          Lua loads files through the RAM-FS
+    native_lua_state.c          the game's Lua state: is Mod Config Menu open, is Lua running?
+    native_stream_path.c        a doubled '/' in a path the engine opens (mod metadata)
+    native_bench.c              frame timing for benchmarks (BENCH line)
+    native_prof_switch.c        Switch: A57 sampler, clock readout, hang watchdog
     compat/                     small newlib/glibc gaps
-tools/
-  run_switch_tests.py           send an NRO over nxlink and require a fresh receipt
-  probe_switch_nxlink.py        nxlink UDP discovery
-  switch_botbase.py             remote pad and screen captures through sys-botbase
 ```
 
 The upstream checkout is kept outside Git at `build/browsing-port/repo`
-(commit `22be498c60aad2f8abcf010cd408422385fb58a3`). `host/build_native.py`
-copies its host sources into `build/browsing-native/src`, applies our patch
-and compiles them together with the lifted translation units, Lua 5.3.3 and
-`host/native/`. Nothing is written back into the upstream checkout.
+(commit `22be498c60aad2f8abcf010cd408422385fb58a3`). `build_native.py` copies
+its host sources into `build/browsing-native/src`, applies our patches and
+compiles them together with the lifted translation units, Lua 5.3.3 and
+`native/`. Nothing is written back into the upstream checkout.
 
 ## How it works
 
@@ -62,7 +92,7 @@ The host converts with the helpers in `isaac_host.h`:
 - `isaac_va(p)` aborts with a backtrace (`isaac_va_escape`) if a host pointer
   outside the window would reach the guest, instead of truncating it.
 
-### Changes to the upstream host (`host/patches/`)
+### Changes to the upstream host (`patches/`)
 
 `0001-native-guest-window.patch`, all of it under `ISAAC_NATIVE`:
 
@@ -92,6 +122,33 @@ The host converts with the helpers in `isaac_host.h`:
 - newlib gaps for the Switch: `timegm` (checked against glibc on 200,000
   dates), `pread`, `sysconf`;
 - an equivalent boot-layout check for the native window.
+
+The other patches are about speed (see [Performance](#performance)):
+
+- `0002-lift-const-base.patch`: the lifted units read the guest base through
+  a `const` alias and see the shared globals with hidden visibility;
+- `0003-native-render-gate.patch`: the upstream render gate on the native
+  clock (`ISAAC_RENDER_GATE`). On the wall clock a drawn in-between frame
+  also waits for the next tick's start, as on the web: vsync paces the
+  presents, not the ticks, and without the wait the game ran 5 % fast
+  (31.8 ms ticks in the starting room, 33.2 ms with it);
+- `0004-snd-free-regions.patch`: a guest `free` skips the search over the
+  lazy sound records when its 64 KiB region never held one;
+- `0005-gl-location-one-pass.patch`: uniform and attribute locations are
+  looked up by name pointer first, then by a hash computed in one pass;
+- `0006-native-gl-render-thread.patch`: the GL backend includes
+  `native_glq.h`, so its GLES calls go through the render thread's queue;
+  the footstep pixel readback and the periodic `glGetError` drain run on that
+  thread instead of waiting for the queue;
+- `0007-readpixels-sync-for-mods.patch`: a 1x1 readback made while Lua runs
+  (a mod's `Sprite:GetTexel`) is exact and synchronous; only the engine's own
+  footstep read keeps the one-read-late answer (see [Mods](#mods)).
+
+`build_native.py` also edits generated files on their way to the compiler:
+`lifted_000.c` gets the `.anm2` hook, `lifted_032.c` the stream-open path
+hook, and the cache hit of
+`dispatch_tbl.c` no longer updates the per-entry census (a random write into
+a 400 KB array on every indirect call; only the exit report read it).
 
 Lua 5.3.3 is built with `LUA_EXTRASPACE 4`, like the game's 32-bit DLL (the
 game uses `lua_getextraspace(L) == L - 4`). `luaL_loadfilex` reads from the
@@ -157,11 +214,34 @@ instance. Three engine behaviours had to be filtered for the choice to stick:
 - `disable.it` files are never mounted from the mod folder or restored from
   the save store, so the engine only sees the one the host decides on;
 - `mods/*/metadata.xml` is never restored from the save store (the engine
-  rewrites it).
+  rewrote it while it could not read it, see below).
 
-Mod save data (`Isaac.SaveModData`) lives in `<game>/data/<metadata
-directory>/` on PC. With Steam stubbed the engine uses the mod's folder name
-instead, so the importer copies it to `data/<folder>/`.
+The engine reads a mod's metadata from `<mod folder>/` + `/metadata.xml`.
+Windows reads the doubled `/` as one, and on PC the mod folder is an absolute
+path; here it is the engine root `//mods/<mod>/`, which the engine's stream
+open (`0x00a178d0`) looks up among the files it listed at start, and
+`…/<mod>//metadata.xml` was not among them. Every mod then had no metadata:
+its `<name>` became the folder name, so mods ran in folder order instead of
+name order (PC runs ` Mod Config Menu - Impure` first and `!!~External item
+descriptions` second; here EID ran before MCM and found no menu to add its
+settings to), mod data went to `data/<folder>/` instead of
+`data/<directory>/`, and the engine rewrote each `metadata.xml` with
+defaults. A hook at the stream open (`native_stream_path.c`, `LIFT_HOOKS` in
+`build_native.py`) hands it a copy of the path with each run of `/` after the
+leading `//` collapsed; the load order, `<name>`, `<version>` and data folder
+now match a Steam PC log.
+
+Mod save data (`Isaac.SaveModData`) lives in `data/<metadata directory>/`, as
+on PC, and the importer copies it there. Saves made by earlier builds keep it
+in `data/<folder>/`: when `data/<directory>/` does not exist, the host
+restores the old folder under the new name (`[native] mod data: …` at boot),
+and the game's next save goes to the new one. The old folder is left alone.
+
+Mods that read pixels (`Sprite:GetTexel`) get the exact pixel: patch 0007
+keeps upstream's one-read-late answer to 1x1 `glReadPixels` (the footprint
+colour) only for reads made outside Lua. EID compares a treasure-room
+pedestal with the `?` sprite this way; served the previous read, every point
+matched and every treasure-room item counted as a hidden alt-path item.
 
 The engine ignores mod folders without `metadata.xml`, and it also ignores
 loose files under the instance's `resources/` (it reads the packed archives
@@ -207,6 +287,18 @@ advances in an unpaused run (measured: it holds still while paused and reads
   accepts, B goes back). With `a_accepts=0` the menus also go by position. A
   held button keeps the meaning it had when it was pressed, so pausing or
   resuming in the middle of a press does not turn it into another action.
+- **Mod Config Menu** draws over a running game, so the tick alone would read
+  it as play. The host also reads `ModConfigMenu.IsVisible` from the game's
+  Lua state (`native_lua_state.c`, raw reads, no mod code runs; the state
+  comes from Lua's `luai_userstateopen/close` hooks); while it is true the
+  pad is in menu mode for +, and the face buttons follow MCM's own
+  numbering. MCM selects with the game's button 4 and goes back with 5,
+  which it calls A and B, but the game numbers an Xbox pad X 4, B 5, Y 6,
+  A 7 (a PC's `inputconfigs.dat` for an Xbox 360 pad; on the console, Switch
+  A sent as Xbox A reached MCM's rebind screen as its "Y"), so with an Xbox
+  pad MCM selects with X, on PC too. Here A goes as Xbox X (select) and B as
+  Xbox B (back); with `a_accepts=0` the bottom button selects and the right
+  one goes back.
 - **+** outside a run is START. In a run, a tap (shorter than 400 ms) pauses
   when it is released, and holding it restarts the run: the host presses the
   game's own restart key (R) through `isaac_native_input_key` and releases it
@@ -273,6 +365,14 @@ The fix:
 Measured: after `eglTerminate` one 2 MiB region stays marked; the next start
 in the same process finds 0.
 
+The same rule applies to services: a session an NRO leaves open stays in the
+process. The benchmark build read the clocks through `clkrst` and never closed
+the service. Each run left one pcv session behind, and the fifth benchmark in
+a row froze the whole console. Atmosphère's fatal report named pcv, with
+`2011-0102` (out of session memory). `native_prof_switch.c` now opens and
+closes the service around each read. After the fix, five runs in a row
+passed.
+
 ## Environment variables
 
 | Variable | Meaning |
@@ -289,6 +389,13 @@ in the same process finds 0.
 | `ISAAC_MAX_FRAMES=N` | stop after N presented frames |
 | `ISAAC_INPUT=...` | scripted input, the upstream Node driver grammar: `frame:key[:frames]`, `frame:mouse:x:y`, `frame:click` |
 | `ISAAC_NATIVE_TICK_EVERY=N` | log the game tick every N frames (default 300) |
+| `ISAAC_RENDER_GATE=0/1/4` | the in-between frame: always drawn / skipped when it would make the next tick late / always skipped (Switch play mode: `frame_skip` in `settings.ini`) |
+| `ISAAC_NATIVE_BENCH=<load>[:<stage>]` | benchmark: time the frames of `ISAAC_NATIVE_BENCH_FROM`..`_TO` (1500..2700) and print one `BENCH {...}` line; `ISAAC_NATIVE_BENCH_MOD=<dir>` seeds the bench mod |
+| `ISAAC_NATIVE_VSYNC=1` | Switch benchmark: keep vsync (a benchmark turns it off) |
+| `ISAAC_NATIVE_GLQ=0` | GL on the game thread instead of the render thread (Switch play mode: `render_thread=0` in `settings.ini`) |
+| `ISAAC_NATIVE_GLQ_CORE=<n>` | Switch: the render thread's core (default 1; the game thread runs on 0) |
+| `ISAAC_NATIVE_VBLANK_PACE=0` | Switch with vsync: pace the passes with the render gate's wall clock instead of one vblank each (see [Frame pacing](#frame-pacing-native_glc)) |
+| `ISAAC_NATIVE_WATCHDOG=<s>` | Switch: print the game thread's PC and LR every s seconds (`WATCHDOG` lines) |
 
 ## Measured results
 
@@ -315,7 +422,7 @@ All dates are 2026-10-25.
 - Saves: two starts in a row; the first writes `persistentgamedata1-3.dat`,
   `gamestate1.dat`, `options.ini` and `save_backups/` (the same files as the
   original under Wine) and the second restores them.
-- Mods: a real set of 17 Workshop mods (16 enabled, 12 with Lua; EID, Mod Config Menu,
+- Mods: the user's 17 mods (16 enabled, 12 with Lua; EID, Mod Config Menu,
   Enhanced Boss Bars…) with their saves: the three slots and the run in
   progress load (`[Continue, 1]`); a test mod calling `error()` logs
   `Error in "PostGameStart" call` as on PC and the game continues. Mod
@@ -336,10 +443,11 @@ return to Sphaira observed through a sys-botbase capture
 | Run | NRO SHA256 | What it showed |
 | --- | --- | --- |
 | `8d59abb76b1346a3b2d276d32edce6c5` | `cb5117e5…` | first PASS: scripted input to the starting room, `game_tick` 565, 1,501 frames in 40 s including boot, 0 GL/AL errors, same ticks as PC |
-| `e392f8a1d3e1464b93c1b336292a40b9` | `0fbff04c…` | `--mods` with real PC saves: the same run continued (seed `LXC1 DPH4`), no mod errors |
+| `e392f8a1d3e1464b93c1b336292a40b9` | `0fbff04c…` | `--mods` with the user's PC saves: the same run continued (seed `LXC1 DPH4`), no mod errors |
 | `e5360778ee0e4087b0500568bf581361` | `fff3afac…` | heap fix: third start in a row in one hbloader process, 18 mods, `game_tick` 4213 |
 | `f823a9cdff3b4d45bda13437aa839814` | `f81d951b…` | pad by sys-botbase: Switch prompts on the file select (BACK on B, SELECT! on A), A advances and B goes back, holding + about 3 s moved from a later room to a new starting room, the floor drawing shows Switch glyphs |
 | `283cb712de304675bf53868ea2d545f1` | `f81d951b…` | a tap of + opens the pause screen and B closes it |
+| `8dceb132a08149fab437a0ce876fae68` | `22948434…` | 2026-10-27, mods as on a Steam PC: load order by `<name>` (MCM, EID, Enhanced Boss Bars first), six mod data folders read under their PC names, EID listed in Mod Config Menu, A selects and B goes back there, an EID option changed and restored |
 
 Earlier runs without a valid PASS, kept for the record: `390ffe59…` (the NRO
 rejected the runner's `--graphics` argument), `fea346e7…` and `1f848d09…`
@@ -349,14 +457,190 @@ hung), `71a84e15…`, `ea156560…` and `c21d61d8…` (no crash, but `game_tick`
 read 0 because the tick probe was still bounded by the old guest limit
 `0x1bf00000`).
 
-A 39,951-frame play session on the console with real saves and mods followed; it ended normally with the heap fully released.
+The user then played a 39,951-frame session on the console with their own
+saves and mods; it ended normally with the heap fully released.
+
+## Performance
+
+### Benchmarks
+
+`tools/bench_native.py` runs the same scenario on PC or on the console and
+saves the result under `build/bench/<run>/`:
+
+```sh
+python3 tools/bench_native.py pc horde:3b --repeat 3
+python3 tools/bench_native.py switch horde:3b --profile        # A57 samples, profile.txt
+python3 tools/bench_native.py switch room --vsync --extra "--env ISAAC_RENDER_GATE=1"
+python3 tools/bench_native.py report
+```
+
+A scenario is `<load>[:<stage>]`. The load is one of:
+
+- `room`: the starting room;
+- `horde`: 36 gapers;
+- `swarm`: 72 attack flies;
+- `tears`: 36 gapers, and Isaac fires four tears at once.
+
+The stage is the debug console's `stage` argument (`1c` Downpour, `3b`
+Flooded Caves, ...). The bench mod (`bench/isaac-bench`) does the rest:
+
+- it starts the run with seed `GZQW B4T8`;
+- it moves to the stage and spawns the load;
+- the player takes no damage and the enemies have a million hit points;
+- the scripted walk stays inside the starting room.
+
+The clock is the deterministic one, so a scenario is the same game work on
+every run and build. On the Switch, benchmarks turn vsync off unless asked.
+`--profile` samples the game thread's PC from another core at 1 kHz and
+resolves the samples against the build's symbols.
+
+The `BENCH` line also gives the time per game tick (`tick_ms`). That is the
+number that says whether the game keeps its speed: 33.3 ms or less is full
+speed.
+
+### What the profile showed
+
+On the Switch the frame is bound by the CPU:
+
+- the swap takes about 1 ms;
+- the A57 profile is flat: no function above 5 %;
+- about half of the time is lifted game code, about a fifth is Mesa,
+  nouveau and IPC, and the rest is the host (indirect calls, uniform
+  lookups, the guest heap).
+
+The water floors cost about twice the Basement, because their reflections
+draw every sprite twice.
+
+### The render thread (`native_glq.c`)
+
+The game thread does all the work on one core while the console has three
+for an application. So the EGL context now lives on a second thread, pinned
+to core 1, and the GL backend's GLES calls (`native_glq.h` renames them to
+`glq_` wrappers) go into a 32 MB ring that thread replays:
+
+- A call without a result is queued with a copy of the memory it reads
+  (uniform values, buffer and texture bytes), so the caller may reuse that
+  memory at once.
+- A call with a result (`glGet*`, `glGen*`, `glCreate*`, a map, a readback)
+  waits until the render thread has run it. These happen while textures and
+  shaders load; in play, none happen per frame. The exit log lists them:
+  `[native][glq] N commands, M waits; waited for: ...`.
+- The swap is queued behind the frame's draws. The next swap first waits for
+  it, so the game runs at most one frame ahead of what the GPU gets (one more
+  frame of input latency).
+- The game thread publishes its commands every 4 KB, not one at a time:
+  publishing each one cost it 2 % of a frame.
+
+In the heavy room this takes Mesa, nouveau and the swap's IPC (about a fifth
+of the frame) off the game thread. `ISAAC_NATIVE_GLQ=0`, or
+`render_thread=0` in `settings.ini`, keeps everything on one core.
+Mesa's own glthread would do the same, but it does not start on libnx (see
+below).
+
+### Frame pacing (`native_gl.c`)
+
+With the render thread the swap no longer blocked the game on the vblank:
+the render gate's sleeps on the wall clock set the pace, and they did not
+know where the vblank was. The image looked fluid but jumped. A thread on
+core 2 now counts the display's vsync events (libnx's default window is
+restated in `native_gl.c` so its display can give the event; a second open
+of `Default` fails with `0x1272`), and every swap records how many vblanks
+its frame and its tick took (`vsync Ns:` lines on nxlink every 10 s, and in
+`browsing-last-run.txt` at exit).
+
+The game ticks on every other pass of its loop, not on a clock, so the fix
+is to give each pass exactly one vblank:
+
+- a drawn frame is swapped right after the vblank before its slot, on the
+  render thread (or the game thread without it); a pass whose in-between
+  render is skipped takes its slot without a swap, and the frame before
+  stays on screen; a late pass presents at once and the slots continue
+  from there;
+- the gate's sleeps are off (patch 0003);
+- with `frame_skip=1` the display stays at 60 fps; there is no held 30 fps
+  mode. Each tick estimates its pass and its in-between render, without the
+  waits for the display, and skips that one in-between frame only when the
+  estimate is within 0.5 ms of the 33.3 ms budget
+  (`ISAAC_NATIVE_PACE_MARGIN=<ms>`), or within 6 ms right after a tick that
+  took three vblanks. The frame before then shows for two vblanks and the
+  game keeps its speed. An earlier version held 30 fps with hysteresis; it
+  locked the heavy rooms at 30 although their ticks fit at 60 with 5 ms to
+  spare on average, and switching was a visible jump of its own.
+
+The `vsync` lines also give, per frame, how long the game thread waited for
+the render thread (`game wait`), how long the render thread had nothing to
+run (`render idle`), the mean estimate (`need`) and the in-between frames
+skipped per decision.
+
+Ticks that took the two vblanks they should (vsync, wall clock,
+`frame_skip=1`, render thread, `horde:3b` unless noted, steady 10 s windows):
+
+| CPU | Build | Ticks on 2 vblanks | Jumps per 10 s | In-between frames |
+| --- | --- | --- | --- | --- |
+| 1785 MHz | before, starting room | 98-99 % | 1-6 | almost all drawn |
+| 1785 MHz | before | 93-95 % | 13-20 | mostly drawn |
+| 1020 MHz | before | 78-82 % | 55-60 | 15-25 % drawn, alternating |
+| 1020 MHz | before, `render_thread=0` | 78-80 % | 45-60 | none drawn |
+| 1020 MHz | vblank slots (`77c8e020…`) | 99-100 % | 0-3 | none drawn (steady 30 fps) |
+| 1020 MHz | vblank slots, starting room | 99.3-100 % | 0-2 | all drawn (60 fps), except about 3.5 s at 30 where the scenario's load nears the budget |
+| 1020 MHz | 60 only, faster game thread (`0b5760ad…`) | 100 % | 0 | all drawn (600 frames in 600 vblanks); `swarm:5c` and `tears:1` the same |
+
+The game keeps its speed (`tick_ms` 33.36 and 33.39). With vsync off (the
+benchmarks) nothing changes.
+
+### Results (Switch, CPU 1020 / GPU 307 / memory 1331 MHz, stock clocks)
+
+`horde:3b` (Flooded Caves, 36 gapers), no vsync:
+
+| Build | ms per frame | ms per tick |
+| --- | --- | --- |
+| before (NRO `4a68bb55…`) | 29.34 | about 58.7 (two frames) |
+| const base, dispatch census out, sound filter (`9ee881fb…`) | 27.62 | 55.2 |
+| + location front cache (`3acf9949…`) | 27.09 | 54.2 |
+| same, `-O3` for the lifted units (`f818bd34…`) | 26.90 | 53.8 |
+| `9ee881fb…` with `ISAAC_RENDER_GATE=4` (in-between frame skipped) | 32.86 | **32.9** |
+| + render thread (`d6091595…`) | 19.30 | 38.6 |
+| + render thread, publishing every 4 KB (`1f9e27af…`) | 19.04 | 38.1 |
+| final (`94bd0543…`, adds `render_thread` to `settings.ini`) with `ISAAC_RENDER_GATE=4` | 23.44 | **23.4** |
+| final with `ISAAC_NATIVE_GLQ=0` (the A/B: GL back on the game thread) | 26.14 | 52.3 |
+
+The render gate is the large step:
+
+- In the heavy room, skipping the in-between frame brings a tick from 55 ms
+  down to 33 ms. That is full game speed at 30 fps, where drawing both
+  frames ran the game at about 60 % speed.
+- With vsync and `ISAAC_RENDER_GATE=1`, the starting room keeps 60 fps: only
+  53 of 627 in-between frames were skipped.
+- The horde rooms switch to a steady 30 fps instead of slowing down.
+
+The render thread is the second step: 29 % less per frame. With vsync and
+`ISAAC_RENDER_GATE=1` (what `frame_skip=1` plays), the heavy room needs
+24.9 ms per tick of the 33.3 ms it has, and the starting room keeps 60 fps
+(16.67 ms per frame, 60 of 630 in-between frames skipped). On PC the queue
+also helps a little (2.77 to 2.45 ms per frame in `horde:3b`).
+
+The `const` base makes the lifted code 8 % smaller (44.0 to 40.5 MB of
+text), because GCC no longer reloads the base after every guest store.
+`-O3` stayed within the noise, so the lifted units keep `-O2`.
+
+Tried and dropped:
+
+- **Mesa's glthread.** It is compiled into the portlibs Mesa, but its queue
+  thread is not created on libnx (the marshal table stays NULL). The failed
+  start then left the process hung.
+- **PGO.** The instrumented NRO (`--tag pgogen`, `tools/bench_native.py
+  pgo`) runs on PC and writes its profiles. On the Switch the whole process
+  froze while the game's TLS callback ran, before any profile was written,
+  and even a watchdog thread on another core printed nothing.
 
 ### Not verified yet
 
 - On the console: the intro timing with the wall clock, and screens where the
   tick may keep advancing outside a run (for example the death screen),
   where B would accept instead of going back.
-- Performance in heavy rooms on the Switch's A57.
+- The vblank slots in real play with the pad (the numbers above are the
+  bench mod's scenarios on the wall clock with vsync), and in menus, the
+  intro cutscene and with the console docked.
 - A guarded guest map on Horizon (today it is taken from the heap with no
   guard page above it).
 - Copying saves from the Switch back to a PC.

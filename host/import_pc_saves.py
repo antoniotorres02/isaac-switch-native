@@ -11,9 +11,9 @@ options.ini starts from the native defaults (SteamCloud=0, so the local files
 are read; windowed 960x540; notices accepted) and takes the player's own
 preferences from the PC file.
 
-Mod save data (Isaac.SaveModData) lives in <game>/data/<metadata directory>/ on
-PC; with Steam stubbed the engine uses the mod's folder name instead, so each
-installed mod's data is copied to data/<folder>/.
+Mod save data (Isaac.SaveModData) lives in <game>/data/<metadata directory>/,
+on PC and in the native host alike; each installed mod's data is copied to the
+same name.
 
     python host/import_pc_saves.py --out build/browsing-native/pc-saves-user
 
@@ -93,9 +93,10 @@ def main() -> int:
         if not meta.exists():
             continue
         m = re.search(r"<directory>(.*?)</directory>", meta.read_text(encoding="utf-8", errors="replace"))
-        data = game / "data" / (m.group(1).strip() if m else folder)
+        name = m.group(1).strip() if m else folder
+        data = game / "data" / name
         if data.is_dir():
-            shutil.copytree(data, args.out / "data" / folder, dirs_exist_ok=True)
+            shutil.copytree(data, args.out / "data" / name, dirs_exist_ok=True)
             mods_with_data += 1
 
     print("saves: %s" % ", ".join(copied) or "none")
