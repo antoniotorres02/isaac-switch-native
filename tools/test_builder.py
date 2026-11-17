@@ -279,7 +279,7 @@ def test_sdcard(tmp: Path) -> None:
     seen = []
     copied, checked = sdcard.copy_to_card(src, card, lambda f, n: seen.append(f))
     assert (copied, checked) == (2, 2) and seen[-1] == 1.0
-    assert (card / "switch/isaac-recomp/saves/save1.dat").read_text() == "mine", "saves are left alone"
+    assert (card / "switch/isaac-recomp/saves/save1.dat").read_text(encoding="utf-8") == "mine", "saves are left alone"
     assert not list(card.rglob("*.part"))
     (src / sdcard.NRO).write_bytes(b"newer nro")
     copied, _ = sdcard.copy_to_card(src, card)
@@ -307,10 +307,10 @@ def test_docker_fixes(tmp: Path) -> None:
     assert set(system.COMMANDS) <= {"copy_group", "copy_start"}
     used = set()
     for path in (ROOT / "host/builder/isb").glob("*.py"):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         for m in re.finditer(r"fix=(\([^)]*\)|\"\w+\")", text):
             used |= set(re.findall(r'"(\w+)"', m.group(1)))
-    gui = (ROOT / "host/builder/isb/gui.py").read_text()
+    gui = (ROOT / "host/builder/isb/gui.py").read_text(encoding="utf-8")
     offered = set(re.findall(r'^\s+"(\w+)": \(t\("btn\.', gui, re.M))
     assert used and not used - offered, "fixes with no button: %s" % sorted(used - offered)
 
@@ -322,8 +322,8 @@ def test_texts(tmp: Path) -> None:
         assert sorted(fields.findall(es)) == sorted(fields.findall(en)), "placeholders differ in %s" % key
     used = set()
     for path in (ROOT / "host/builder/isb").glob("*.py"):
-        used |= set(re.findall(r'''\bt\(\s*"([a-z_]+\.[a-z_.]+|yes_no)"''', path.read_text()))
-        used |= set(re.findall(r'''Item\(\w+, "([a-z_]+\.[a-z_]+)"''', path.read_text()))
+        used |= set(re.findall(r'''\bt\(\s*"([a-z_]+\.[a-z_.]+|yes_no)"''', path.read_text(encoding="utf-8")))
+        used |= set(re.findall(r'''Item\(\w+, "([a-z_]+\.[a-z_]+)"''', path.read_text(encoding="utf-8")))
     missing = sorted(k for k in used if k not in texts.T)
     assert not missing, missing
     for stage in progress.ORDER + ["export"]:

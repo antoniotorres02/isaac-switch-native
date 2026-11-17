@@ -18,7 +18,7 @@ from .checks import NEED_MEMORY, OK, FAIL, WARN, Item
 
 CONTAINER = "isaac-switch-build"
 VOLUME = "isaac-switch-work"
-IMAGE_INFO = json.loads((Path(__file__).with_name("image.json")).read_text())
+IMAGE_INFO = json.loads((Path(__file__).with_name("image.json")).read_text(encoding="utf-8"))
 
 # No console window flashing for every docker call on Windows.
 _NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}

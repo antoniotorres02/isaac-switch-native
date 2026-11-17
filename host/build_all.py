@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-UPSTREAM_INFO = json.loads((HERE / "upstream.json").read_text())
+UPSTREAM_INFO = json.loads((HERE / "upstream.json").read_text(encoding="utf-8"))
 
 # Bump when a stage changes what it produces: older stamps stop counting.
 PIPELINE_VERSION = 1
