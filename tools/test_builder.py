@@ -358,7 +358,7 @@ def main() -> int:
              test_cli_check]
     for test in tests:
         with tempfile.TemporaryDirectory() as d:
-            test(Path(d))
+            test(Path(d).resolve())     # Windows hands out 8.3 names such as RUNNER~1
         print("%-24s PASS" % test.__name__)
     print("OK")
     return 0
