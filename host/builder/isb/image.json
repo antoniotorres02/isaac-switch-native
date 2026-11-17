@@ -1,5 +1,1 @@
-{
-  "repository": "ghcr.io/antoniotorres02/isaac-switch-builder",
-  "digest": "",
-  "local": "isaac-switch-builder:latest"
-}
+{"repository": "ghcr.io/antoniotorres02/isaac-switch-builder", "digest": "sha256:1473c003a3c3c41d096d47a827ef2038e8244c0be64eef875d276eecba60f8a8", "local": "isaac-switch-builder:latest"}
