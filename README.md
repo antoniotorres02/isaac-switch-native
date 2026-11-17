@@ -18,21 +18,38 @@ emulator and not a remake. On a Switch running homebrew:
   restarts a run;
 - a launch screen checks that the game's files are on the card before it offers
   Play;
-- optionally, the console signs in to Steam with a QR code from the Steam app and
-  downloads your Steam Cloud saves, with no PC involved. **Uploading at exit does
-  not work yet.** It is an unofficial Steam client: read the
-  [risks](STEAM-CLOUD.md#risk), or build with `--no-steam`, which leaves all of it
-  out.
+- optionally, the console signs in to Steam with a QR code from the Steam app,
+  downloads your Steam Cloud saves before you play and uploads them when the game
+  closes or from an in-game panel (hold − and press +), with no PC involved. It is an
+  unofficial Steam client: read the [risks](STEAM-CLOUD.md#risk). It is left out
+  unless you ask for it.
 
 **This repository contains no game code, data or assets, and no tool or
 method for removing the game's copy protection.** You need your own
 purchased copy of the game, and you build everything yourself from it.
 
+## Build it
+
+**[Isaac Switch Builder](host/builder/README.md)** is a program for Windows and
+Linux that does the whole build from your Steam install, with a window that explains
+each step: it finds the game, suggests the files it needs, installs or opens Docker
+Desktop if needed, shows the progress, and copies the result to the SD card.
+Download it from the [latest release](https://github.com/antoniotorres02/isaac-switch-native/releases/latest).
+**Linux is tested; Windows is not tested on a real machine yet.**
+
+> **It needs the game's executable without Steam's DRM.** Neither the program nor
+> this repository removes it or explains how. Whether and how you do it is your
+> decision and your responsibility under the law that applies to you.
+
+The same build with one Docker command is in [GUIDE.md](GUIDE.md).
+
 ## Documentation
 
 | Document | What it covers |
 | --- | --- |
-| [BUILDING.md](BUILDING.md) | Requirements, the upstream pipeline, the PC build and the Switch NRO |
+| [host/builder/README.md](host/builder/README.md) | The builder program: download, the six pages, the command line, how it works |
+| [GUIDE.md](GUIDE.md) | The same build with Docker and one command |
+| [BUILDING.md](BUILDING.md) | Requirements, the upstream pipeline, the PC build and the Switch NRO, by hand |
 | [PLAYING.md](PLAYING.md) | Installing on the Switch, controls, `settings.ini`, PC saves, adding and toggling mods, playing on PC, troubleshooting |
 | [STEAM-CLOUD.md](STEAM-CLOUD.md) | Steam sign-in and Cloud saves from the console: how it works, what was measured, what does not work yet, the risks, and building without it |
 | [DESIGN.md](DESIGN.md) | How the host works, what was changed and why, and what was measured on hardware |

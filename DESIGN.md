@@ -14,7 +14,8 @@ buttons drawn on screen are the Switch ones.
 
 | Document | What it covers |
 | --- | --- |
-| [BUILDING.md](BUILDING.md) | Building everything from your own copy of the game: the PE, the upstream lift, the PC executable and the Switch NRO |
+| [GUIDE.md](GUIDE.md) | **Start here:** from your own copy of the game to the SD card, with one Docker command |
+| [BUILDING.md](BUILDING.md) | The same by hand, step by step: the PE, the upstream lift, the PC executable and the Switch NRO |
 | [PLAYING.md](PLAYING.md) | Installing on the Switch, controls, `settings.ini`, moving your PC saves, adding and toggling mods, playing on PC, troubleshooting |
 | [STEAM-CLOUD.md](STEAM-CLOUD.md) | Syncing the saves with the account's Steam Cloud from the console itself: provisioning, conflict rules, measured protocol, risks |
 | This file | How the host works, what was changed and why, and what was measured |
@@ -29,12 +30,13 @@ buttons drawn on screen are the Switch ones.
 
 ```
 host/
+  build_all.py                  the whole build in one command (what the Docker image runs)
   build_native.py               build driver (profiles debug, asan, release, gl, switch)
   upstream.json                 pinned upstream commit, PE hashes and toolchain versions
   extra_code_pointer_starts.py  the 519 function entries the upstream lift misses
   import_pc_saves.py            Steam profile -> native save store
   steam_cloud_cm.py             Steam CM protocol: token provisioning, cloud read/write
-  patches/                      changes to the upstream host sources (0001-0007)
+  patches/                      changes to the upstream host sources (0001-0011)
   bench/isaac-bench/            the benchmark mod (tools/bench_native.py)
   native/
     native_main.c               entry, memory image, instance/RAM-FS seeding, saves, mods, clock
@@ -142,7 +144,37 @@ The other patches are about speed (see [Performance](#performance)):
   thread instead of waiting for the queue;
 - `0007-readpixels-sync-for-mods.patch`: a 1x1 readback made while Lua runs
   (a mod's `Sprite:GetTexel`) is exact and synchronous; only the engine's own
-  footstep read keeps the one-read-late answer (see [Mods](#mods)).
+  footstep read keeps the one-read-late answer (see [Mods](#mods));
+- `0008-native-fullscreen-view.patch`: the game window has no frame and is
+  always the 960x540 surface when windowed (it was a 976x578 client, so the
+  intro drew past the surface), and full screen can be a smaller window
+  (`ISAAC_NATIVE_FULLSCREEN_VIEW`, see [Zoom](#zoom-full-screen));
+- `0009-readpixels-exact-dirt-colour.patch`: the engine also reads the floor
+  colour under a burrowing enemy (Round Worm, Ulcer, Night Crawler...) with
+  1x1 `glReadPixels`: `0x00823590` takes the median of five reads around it
+  and tints the anm2 `dirt`/`Hole` layers with it. Served one read late
+  through the render thread, all five got the same stale word, often the
+  `(0,0,0,a)` of the burst's sixth read, and the dirt stayed black for the
+  whole emergence. Only the footstep (Entity_Player `0x007b8cb0`, two guest
+  frames above the GL call) keeps the lagged read now; every other 1x1 read is
+  exact. Measured on PC: 95/95 five-point samples and 19/19 sixth reads exact,
+  the dirt brown; not yet watched on the console;
+- `0010-video-rgb-into-rgba.patch`: the Theora cutscenes (the endings, e.g.
+  cutscene 17 after The Chest, `014_Defeating_in_The_Chest_THE-END.ogv`)
+  were black with their sound playing. theoraplayer's frame upload
+  (`0x00a62b10`) writes each frame as `GL_RGB` into a texture the engine made
+  `GL_RGBA`; desktop GL converts, GLES 3 refuses it (`GL_INVALID_OPERATION`),
+  so nothing was ever uploaded. Each 2D texture's level-0 format is kept and
+  RGB rows going into an RGBA level are widened (alpha 255); the
+  fixed-function `glEnable/glDisable(GL_TEXTURE_2D)` the upload asks for is
+  dropped (`GL_INVALID_ENUM` on GLES). The web build has the same black video;
+- `0011-theora-without-mmx.patch`: with the upload fixed the video showed green
+  stripes: the lift's MMX intrinsics in `recomp_rt.c` work on the truncated
+  32-bit halves, and libtheora's MMX routines (`0x00ae4630`..`0x00ae53b0`,
+  chosen by `oc_cpu_flags_get` `0x00ae4410`) are their only users. `cpuid`
+  no longer reports MMX, so libtheora takes its C paths (measured: no slower);
+  libyuv and the CRT test the SSE bits only. Measured on PC: cutscene 17, 3
+  and 4 show their footage with 0 GL errors; not yet watched on the console.
 
 `build_native.py` also edits generated files on their way to the compiler:
 `lifted_000.c` gets the `.anm2` hook, `lifted_032.c` the stream-open path
@@ -339,6 +371,55 @@ playing: 0 corrections. The PC window and the Switch play mode turn it on.
   the pad.
 - Each start logs its stages to `sdmc:/switch/isaac-recomp/browsing-last-run.txt`.
 
+#### The Steam Cloud panel
+
+Hold − and press + in the game: see
+[STEAM-CLOUD.md](STEAM-CLOUD.md#the-in-game-panel). The panel is painted in
+software (`isaac_panel_draw` in `native_launcher.c`) and drawn by
+`native_gl.c` on the GL thread right before the swap, over the visible view
+whatever the zoom, with the GL state read and put back around it.
+
+#### Zoom (full screen)
+
+The engine takes its point scale from the window's client size
+(`0x954320`: `floor(min(h/240, w/400))`, capped by `MaxScale`) and shows
+`w/scale` x `h/scale` points. At 960x540 that is 2 and 480x270 points, the PC
+view. A window of 852x480 keeps the scale at 2 and shows 426x240 points: the
+room fills more of the screen and the HUD stays at the edges, which is how
+the console releases look. 1.125x is the limit: below 480 rows or 800
+columns the scale drops to 1 and the view zooms out.
+
+The game's own **Options -> Fullscreen** switch drives it. Full screen makes
+GLFW size the window to the monitor (the engine asks for 1281x720, one column
+more than the display, for its borderless mode); patch 0008 answers that
+with `ISAAC_NATIVE_FULLSCREEN_VIEW` instead, and windowed with the surface.
+The engine re-reads the size at once, so the switch works in a run, and it
+renders the smaller view from the surface's bottom-left corner. On the
+Switch `native_gl.c` sets a crop on the queued buffer to that part
+(`nwindowSetCrop`) and the compositor scales it to the screen, so the zoom
+costs nothing on the GPU; screenshots read back just that part.
+
+Measured on PC (gl profile, headless): with `852x480`, `Viewport: 852x480`,
+point scale 2, start room as expected; toggling Fullscreen in the options
+menu went 852x480 -> 960x540 -> 852x480 in the same run; without the
+variable the intro and the game stay 960x540. On the console (2026-11-10,
+NRO `9f54b7bf…`, run `cc63f1ff7a564894bdefa09df2113c8e`, global PASS, autotest
+with `--env ISAAC_NATIVE_FULLSCREEN_VIEW=852x480 --env
+ISAAC_NATIVE_FULLSCREEN_ON=1`): the crop went to `0,60 852x480` and a capture
+of the screen showed the start room filling it with the whole HUD and no
+band, so the default rows are the right ones. Return to Sphaira observed.
+Toggling Fullscreen live has been measured on PC only.
+
+Against the official release (2026-11-10, the Switch Lite's own *The Binding of
+Isaac: Afterbirth+* with Repentance, handheld): its title, file select,
+character select and start room are zoomed exactly like this view, and in the
+start room the room shows the same area with the HUD (hearts, counters, stats,
+minimap) at the same size as ours with `852x480`. The engine has one scale for
+the room and the HUD, so the console release's zoom enlarges both; a 720p
+screen gives scale 3, 426x240 points, the same as this view. The pause menu's
+paper reaches below the screen in both views, PC and zoomed: that is the
+game's own layout, not the zoom.
+
 #### hbloader's shared heap
 
 hbloader runs every NRO in a single process with a single heap. The EGL
@@ -395,6 +476,9 @@ passed.
 | `ISAAC_NATIVE_GLQ=0` | GL on the game thread instead of the render thread (Switch play mode: `render_thread=0` in `settings.ini`) |
 | `ISAAC_NATIVE_GLQ_CORE=<n>` | Switch: the render thread's core (default 1; the game thread runs on 0) |
 | `ISAAC_NATIVE_VBLANK_PACE=0` | Switch with vsync: pace the passes with the render gate's wall clock instead of one vblank each (see [Frame pacing](#frame-pacing-native_glc)) |
+| `ISAAC_NATIVE_FULLSCREEN_VIEW=<w>x<h>` | the window the engine gets in full screen, clamped to 800x480..960x540 (Switch play mode: from `zoom` in `settings.ini`); unset, full screen stays 960x540 |
+| `ISAAC_NATIVE_FULLSCREEN_ON=1` | with the variable above, turn `Fullscreen` on once in the saved `options.ini` (the Switch sets it at the first start of a build with `zoom`) |
+| `ISAAC_NATIVE_CROP_FLIP=1` | Switch: show the top rows of the surface for a zoomed view instead of the bottom ones |
 | `ISAAC_NATIVE_WATCHDOG=<s>` | Switch: print the game thread's PC and LR every s seconds (`WATCHDOG` lines) |
 
 ## Measured results

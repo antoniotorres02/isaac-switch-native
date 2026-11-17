@@ -65,6 +65,31 @@ static int save(const char *dir, const char *name, const isaac_launcher_view *v)
     return 0;
 }
 
+#ifndef ISAAC_NO_STEAM
+/* The in-game panel, laid over a dark page the size of the screen. */
+static uint32_t panel_px[ISAAC_PANEL_W * ISAAC_PANEL_H];
+static int save_panel(const char *dir, const char *name, const isaac_panel_view *pv) {
+    isaac_panel_draw(panel_px, pv);
+    for (int i = 0; i < ISAAC_LAUNCHER_W * ISAAC_LAUNCHER_H; ++i) px[i] = 0xff2a2018u;
+    int ox = (ISAAC_LAUNCHER_W - ISAAC_PANEL_W) / 2, oy = (ISAAC_LAUNCHER_H - ISAAC_PANEL_H) / 2;
+    for (int y = 0; y < ISAAC_PANEL_H; ++y)
+        for (int x = 0; x < ISAAC_PANEL_W; ++x) {
+            uint32_t s = panel_px[y * ISAAC_PANEL_W + x], a = s >> 24;
+            uint32_t *d = &px[(oy + y) * ISAAC_LAUNCHER_W + ox + x], out = 0xff000000u;
+            for (int c = 0; c < 24; c += 8)
+                out |= ((((s >> c) & 0xff) * a + ((*d >> c) & 0xff) * (255 - a)) / 255) << c;
+            *d = out;
+        }
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s.rgba", dir, name);
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(px, 4, ISAAC_LAUNCHER_W * ISAAC_LAUNCHER_H, f) != ISAAC_LAUNCHER_W * ISAAC_LAUNCHER_H) return 1;
+    fclose(f);
+    printf("%s\n", name);
+    return 0;
+}
+#endif
+
 #ifdef ISAAC_NO_STEAM
 static int states(const char *dir) {
     isaac_launcher_view v;
@@ -229,6 +254,35 @@ int main(int argc, char **argv) {
     memcpy(v.slot, slots, sizeof slots);
     BAD_FILES(v);
     bad |= save(argv[2], "17-files-missing", &v);
+
+    isaac_panel_view pv;
+    memset(&pv, 0, sizeof pv);
+    snprintf(pv.account, sizeof pv.account, "Steam \xc2\xb7 \xe2\x80\xa6" "1234567");
+    pv.auto_upload = 1;
+    pv.t = 0.35f;
+    pv.state = ISAAC_PANEL_READY;
+    snprintf(pv.message, sizeof pv.message, "2 saves changed since the last upload");
+    snprintf(pv.detail, sizeof pv.detail, "persistentgamedata1, gamestate1. A sends them to Steam Cloud now.");
+    bad |= save_panel(argv[2], "20-panel-ready", &pv);
+    pv.state = ISAAC_PANEL_BUSY;
+    snprintf(pv.message, sizeof pv.message, "Uploading\xe2\x80\xa6");
+    snprintf(pv.detail, sizeof pv.detail, "logged on (cell 212)");
+    bad |= save_panel(argv[2], "21-panel-busy", &pv);
+    pv.state = ISAAC_PANEL_DONE;
+    snprintf(pv.message, sizeof pv.message, "Uploaded 2 saves");
+    snprintf(pv.detail, sizeof pv.detail, "Steam Cloud has what this console has. 22:41");
+    bad |= save_panel(argv[2], "22-panel-done", &pv);
+    pv.state = ISAAC_PANEL_FAILED;
+    pv.auto_upload = 0;
+    snprintf(pv.message, sizeof pv.message, "Upload failed");
+    snprintf(pv.detail, sizeof pv.detail, "cannot reach Steam: cannot resolve api.steampowered.com (7). "
+             "Check the console's internet connection; your saves stay on the card.");
+    bad |= save_panel(argv[2], "23-panel-failed", &pv);
+    pv.state = ISAAC_PANEL_UNAVAILABLE;
+    snprintf(pv.message, sizeof pv.message, "Nothing can be uploaded this session");
+    snprintf(pv.detail, sizeof pv.detail, "The sync before the game did not finish, so this console cannot "
+             "compare its saves with Steam Cloud. Restart the game to sync again.");
+    bad |= save_panel(argv[2], "24-panel-unavailable", &pv);
 
     return bad;
 #endif

@@ -47,6 +47,8 @@ typedef struct {
     const char *token;          /* refresh token (iss=steam) */
     int prompt;                 /* 1: ask on a conflict */
     int timeout_ms;             /* network timeout */
+    int keep_pull_marker;       /* push: leave the pull marker, so the session can
+                                   push again (an upload from the in-game panel) */
 } isaac_steamsync_cfg;
 
 /* The token file written by the PC provisioning step:

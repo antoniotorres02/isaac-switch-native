@@ -20,7 +20,7 @@ memory, and the NRO refuses to start there.
 The SD card layout:
 
 ```
-sdmc:/switch/isaac-browsing.nro           the NRO you built
+sdmc:/switch/isaac-repentance-ns1-recomp.nro           the NRO you built
 sdmc:/switch/isaac-recomp/
   guest/                                  game files from your PC install
     resources/packed/*.a
@@ -35,7 +35,7 @@ sdmc:/switch/isaac-recomp/
 Copy the files with an SD card reader or over FTP (Sphaira has an FTP
 server; ftpd and others work too):
 
-1. `build/browsing-native/switch/isaac-browsing.nro` → `sdmc:/switch/isaac-browsing.nro`.
+1. `build/browsing-native/switch/isaac-repentance-ns1-recomp.nro` → `sdmc:/switch/isaac-repentance-ns1-recomp.nro`.
 2. From your Steam folder (`$GAME`): `resources/` and `savedatapath.txt` →
    `sdmc:/switch/isaac-recomp/guest/`. The NRO only reads the 22 files listed
    in its `instance_index.json` (about 1.07 GB): the ten `resources/packed/*.a`
@@ -45,7 +45,7 @@ server; ftpd and others work too):
 3. Optional: your PC saves into `saves/` and your mods into `guest/mods/`
    (sections below).
 
-Then launch **Isaac (browsing lift)** from the homebrew launcher. Quit with
+Then launch **ISAAC REPENTANCE+ NS1 RECOMP** from the homebrew launcher. Quit with
 HOME → Close: the game shuts down normally and writes its saves.
 
 The NRO contains the memory image of your executable. Do not share it.
@@ -99,7 +99,19 @@ render_thread=1
 # Before the game, a check that its files are on the card and none was
 # cut short by a copy; Play stays off when they are not. 0: no check.
 check_game_files=1
+
+# Options -> Fullscreen in the game zooms in on the room, as the
+# console releases do; Fullscreen off is the PC view. How much: 100
+# shows 426x240 points of the room instead of 480x270, the most the
+# game allows; 0 makes Fullscreen look like the PC view.
+zoom=100
 ```
+
+**Zoom.** In the game, Options -> **Fullscreen** switches between the zoomed
+view of the console releases (on, the default) and the PC view (off), at once,
+even in a run. `zoom` says how far Fullscreen zooms in. The first start of a
+build with this setting adds the `zoom` line and turns Fullscreen on once, so
+the console view is the default for existing saves too.
 
 The launch screen names what is missing. Only what cannot work counts: a file that
 is not there or is empty, or an archive of 1 MiB or more with over 1 % gone. Other
@@ -187,9 +199,10 @@ expansions. If it does not have the game the saves do not sync, and you can stil
 play. Building with `--no-steam` ([BUILDING.md](BUILDING.md#6-switch-nro)) leaves all
 of this out.
 
-**Uploading does not work yet on the console:** the one real try failed to resolve
-Steam's address after the game closed. Saves download and stay safe on the card, but
-treat the sync as download-only for now.
+**Uploading works on the console since 2026-11-10** (from the panel and when the
+game is quit from its own menu). One upload at exit was refused once by Steam's
+storage (HTTP 403) before a fix to how the upload URL is read; if an upload fails,
+the panel says so and the save stays marked to upload.
 
 Once signed in it behaves like this:
 
@@ -198,12 +211,21 @@ Once signed in it behaves like this:
   downloaded (the copy they replace is backed up); if both sides changed, a
   dialog asks which copy to keep. The game starts when you press A on **Play**
   (+ leaves, Y retries a sync that failed);
-- at exit, the slots you played are uploaded: close the game with HOME →
-  Close Software, which lets it quit normally and upload before the console
-  ends it (it has 15 seconds for that).
+- at exit, the slots you played are uploaded: quit from the game's own menu
+  (B on the title screen, then **Yes** to "Are you sure you want me to
+  die?"), or close it with HOME → Close Software, which lets it quit
+  normally and upload before the console ends it (it has 15 seconds for
+  that);
+- in the game, **hold − and press +** for the Steam Cloud panel: **A** uploads
+  the saves that changed right now and says whether it worked (a missing
+  connection shows as "Upload failed" with the reason), **X** turns the upload
+  when the game closes on or off, **B** (or − and + again) closes it. A run
+  pauses when the panel opens. If the upload when the game last closed failed,
+  the panel says so the next time.
 
 `settings.ini` has `steam_sync=1` (0 turns it off), `sync_prompt=1` (0 makes
-the newest copy win without asking) and `launcher=1` (0 starts the game
+the newest copy win without asking), `auto_upload=1` (0: nothing is uploaded
+when the game closes, only from the panel) and `launcher=1` (0 starts the game
 straight away, with no screen, and then only a token copied from a PC signs in).
 
 [STEAM-CLOUD.md](STEAM-CLOUD.md) has the sign-in details, the rules, what was

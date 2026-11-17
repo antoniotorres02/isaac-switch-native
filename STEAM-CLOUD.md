@@ -90,7 +90,7 @@ be built from that person's own copy ([BUILDING.md](BUILDING.md)).
 python3 host/build_native.py --profile switch --no-steam
 ```
 
-writes `build/browsing-native/switch-nosteam/isaac-browsing.nro` with none of this
+writes `build/browsing-native/switch-nosteam/isaac-repentance-ns1-recomp.nro` with none of this
 in it: no sign-in, sync, ownership check or TLS. The launch screen keeps Play and
 the check of the game's files (see [PLAYING.md](PLAYING.md#settingsini)), and the
 `steam_sync` and `sync_prompt` settings do not exist. Measured on the ELF: no
@@ -109,7 +109,11 @@ to Steam (the normal build has 28 such symbols and 8 such strings).
     `launcher=0`, the newest timestamp wins;
   * neither changed → nothing.
 * **Push**, after the game closes (it has not yet worked on a console, see
-  [Verified, and not](#verified-and-not)). Close it with **HOME → Close Software**: the
+  [Verified, and not](#verified-and-not)). Quitting from the game's own menu
+  (title screen, B, **Yes** to "Are you sure you want me to die?") returns
+  from the game's `main` like any other end (measured on PC: `main returned
+  0`, saves written, no `exit()` call), and the push runs right after it, with
+  no exit request from the system pending. Or close it with **HOME → Close Software**: the
   NRO holds the exit (`appletLockExit`), so the game quits through its own path
   and the push runs before the process ends. The system allows 15 s after the
   request; measured on the console, the game was down 469 ms after it and the
@@ -131,8 +135,58 @@ involved in a conflict, is kept under `saves/save_backups/steam-<date>/`.
 ```
 steam_sync=1     # 0 turns the sync off completely
 sync_prompt=1    # 1 asks on screen; 0 = the newest copy wins silently
+auto_upload=1    # 0 = no push when the game closes (the panel still uploads)
 launcher=1       # 0 = no launch screen: sync and start the game at once
 ```
+
+### The in-game panel
+
+Hold **−** and press **+** anywhere in the game. `native_switch.c` takes the pad
+(the game gets a neutral one, and one START to pause a run), paints the panel
+with the launch screen's code (`isaac_panel_draw`, the console's shared font
+copied once and the pl service closed again) and `native_gl.c` lays it over
+each frame before the swap, saving and restoring every piece of GL state it
+touches. **A** runs a push on its own thread with `keep_pull_marker` set, so
+the session can upload again and still push when it closes; the panel shows
+the progress lines, then "Uploaded N saves", "Steam Cloud already has these
+saves" or "Upload failed" with the reason. **X** flips `auto_upload` and writes
+it to `settings.ini`. **B**, or − and + again, closes it; the buttons it used
+reach the game only once released. Without a finished pull in the session
+(signed out, "Play anyway", `steam_sync=0`) the panel says why nothing can be
+uploaded. The push when the game closes waits for a panel upload still
+running, and writes its result to `saves/steam-sync-last-exit-upload.txt`,
+which the panel shows next time when it failed.
+
+On the console (2026-11-10, NRO `2f5d589e…`, run `24d6a153bf714f41b289a7efa08b8099`,
+autotest with `--no-script`, so no pull and no upload): − held and + opened the
+panel over the intro, saying why nothing could be uploaded; X switched "Upload
+when the game closes" off and on again and B closed it. Captures of the screen
+showed each state.
+
+**Real uploads on the console, 2026-11-10** (the account's own saves, with the
+user's go-ahead):
+
+* NRO `2f5d589e…`: the pull answered five conflicts "Steam Cloud" (the cloud
+  copies were newer) and downloaded them. From the panel, A first said "Steam
+  Cloud already has these saves" (a push with 0 uploads); after continuing the
+  run in slot 1 and leaving it from the pause menu, A said "Uploaded 4 saves"
+  (`persistentgamedata1-3`, `gamestate1`). Then the game was quit from its own
+  menu (title, B, **Yes**): the push at exit resolved and logged on (the DNS
+  failure of 2026-11-01 did not come back), but the storage server answered
+  `HTTP 403` with an empty body to both tries of `persistentgamedata1.dat`, and
+  `steam-sync-last-exit-upload.txt` recorded it.
+* The upload code kept at most 4 of the URL's headers, cut each value at 191
+  characters and the path at 1023, without a word, and a header or query cut
+  short breaks the URL's signature, which storage servers answer with 403. That
+  is the likely cause but not a proven one: the same file had gone up a minute
+  earlier through another CM. The URL now has room for 16 headers of up to
+  1,400 characters and a 4 KiB path, anything that still does not fit is an
+  error naming it, and a refused request logs the host, the path length and
+  each header's name and length.
+* NRO `ffcd67eb…`: the panel opened with the earlier failure in its text, A
+  uploaded the pending file ("Uploaded 1 save"); the run was continued and left
+  again, and the game quit from its menu: the push at exit uploaded 4 files, 0
+  failed, and the result file says `ok`. The 403 has not been seen again.
 
 ### The launch screen
 
@@ -252,7 +306,8 @@ push over 400 ms after HOME -> Close
 resolved that name minutes before, and did again at the next start. The cause is
 not known, nor whether a wait, or quitting from the game's menu, would avoid it.
 Nothing is lost: the saves stay on the card, marked "Uploads on exit" at the next
-start. **Until this is solved, treat Steam Cloud on the console as download-only.**
+start. It has not come back since: on 2026-11-10 two pushes at exit (after
+quitting from the game's menu) reached Steam, see the real uploads above.
 
 **Ownership and game files on the console, 2026-11-01** (NRO `1189e704…`): the
 launch screen showed "game and all expansions" from the live service and "22 of 22

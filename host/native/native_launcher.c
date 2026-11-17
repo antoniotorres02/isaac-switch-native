@@ -47,6 +47,7 @@
 
 static uint32_t *g_px;
 static int g_stride;
+static int g_cw = W, g_ch = H;     /* the buffer being drawn: the page, or the panel */
 
 /* ---- pixels ---------------------------------------------------------------- */
 
@@ -55,7 +56,7 @@ static inline uint32_t pack(uint32_t rgb) {
 }
 
 static inline void blend(int x, int y, uint32_t rgb, int a) {
-    if (a <= 0 || (unsigned)x >= W || (unsigned)y >= H) return;
+    if (a <= 0 || (unsigned)x >= (unsigned)g_cw || (unsigned)y >= (unsigned)g_ch) return;
     uint32_t *d = &g_px[y * g_stride + x];
     if (a >= 255) { *d = pack(rgb); return; }
     int dr = *d & 0xff, dg = (*d >> 8) & 0xff, db = (*d >> 16) & 0xff;
@@ -802,6 +803,8 @@ void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view
     if (!g_bg && (g_bg = malloc((size_t)W * H * 4))) {
         g_px = g_bg;
         g_stride = W;
+        g_cw = W;
+        g_ch = H;
         draw_background();
     }
     for (int y = 0; y < H; ++y) {
@@ -810,6 +813,8 @@ void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view
     }
     g_px = pixels;
     g_stride = stride;
+    g_cw = W;
+    g_ch = H;
     draw_nav(v);
     draw_files_notice(v);
     draw_play_bar(v);
@@ -825,4 +830,59 @@ void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view
     else if (v->signout != ISAAC_SIGNOUT_NONE) draw_signout(v);
 #endif
 }
+
+/* ---- the in-game Steam Cloud panel -------------------------------------------- */
+/* Drawn into its own small buffer, which the GL side lays over the game. Pixels
+ * the panel does not cover stay transparent (alpha 0). */
+#ifndef ISAAC_NO_STEAM
+void isaac_panel_draw(uint32_t *pixels, const isaac_panel_view *v) {
+    const int pw = ISAAC_PANEL_W, ph = ISAAC_PANEL_H;
+    memset(pixels, 0, (size_t)pw * ph * 4);
+    g_px = pixels;
+    g_stride = pw;
+    g_cw = pw;
+    g_ch = ph;
+    rrect_grad(0, 0, pw, ph, 8, 0x2b3240, 0x1d2129, 1, 255);
+    rrect_line(0, 0, pw, ph, 8, 1, 0x3a4b5e, 255);
+    cloud_icon(26, 22, 30, C_ACCENT, 255);
+    text(68, 48, "Steam Cloud", 24, BOLD, 0xffffff);
+    if (v->account[0]) {
+        int aw = text_w(v->account, 15, REG, 0);
+        text(pw - 26 - aw, 46, v->account, 15, REG, C_TEXT2);
+    }
+    rect(26, 70, pw - 52, 1, 0x3a4b5e, 255);
+
+    /* the state: an icon and a headline, the reason under it */
+    float cx = 42, cy = 112;
+    switch (v->state) {
+    case ISAAC_PANEL_BUSY: spinner(cx, cy, 12, v->t, C_ACCENT); break;
+    case ISAAC_PANEL_DONE: circle(cx, cy, 13, C_OK, 255); check(cx, cy, 13, 0xffffff); break;
+    case ISAAC_PANEL_FAILED: circle(cx, cy, 13, C_BAD, 255); cross(cx, cy, 13, 0xffffff); break;
+    case ISAAC_PANEL_UNAVAILABLE: circle(cx, cy, 13, C_WARN, 255); cross(cx, cy, 13, 0x1d2129); break;
+    default: cloud_icon(cx - 14, cy - 13, 28, C_TEXT2, 255); break;
+    }
+    char head[160];
+    fit(head, sizeof head, v->message, 19, BOLD, pw - 70 - 26);
+    text(70, cy + 7, head, 19, BOLD, v->state == ISAAC_PANEL_FAILED ? 0xffb3ab : C_TEXT);
+    paragraph(70, cy + 34, pw - 70 - 26, v->detail, 15, 21, C_TEXT2, 3);
+
+    /* upload at exit */
+    int ry = 214;
+    rrect(26, ry, pw - 52, 40, 4, 0x232832, 255);
+    text(42, ry + 26, "Upload when the game closes", 16, REG, C_TEXT);
+    const char *onoff = v->auto_upload ? "ON" : "OFF";
+    int ow = text_w(onoff, 14, BOLD, 1) + 22;
+    rrect(pw - 42 - ow, ry + 9, ow, 22, 11, v->auto_upload ? C_GREEN_R : 0x4a5361, 255);
+    text_ex(pw - 42 - ow + 11, ry + 25, onoff, 14, BOLD, 1, 0xffffff, 255);
+
+    /* the buttons, right to left */
+    int x = pw - 26, fy = ph - 22;
+    x = dialog_hint(x, fy, "B", "Close");
+    x = dialog_hint(x, fy, "X", v->auto_upload ? "Don't upload at exit" : "Upload at exit");
+    if (v->state != ISAAC_PANEL_BUSY && v->state != ISAAC_PANEL_UNAVAILABLE)
+        dialog_hint(x, fy, "A", "Upload now");
+    g_cw = W;
+    g_ch = H;
+}
+#endif
 #endif

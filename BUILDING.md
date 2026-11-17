@@ -1,5 +1,9 @@
 # Building the native host from your own copy of the game
 
+**To just build it, follow [GUIDE.md](GUIDE.md):** one Docker command does all of
+this. What follows is the same work by hand, for development or to see what each
+step does.
+
 This is the exact sequence that produced the PC executable and the Switch NRO
 described in [DESIGN.md](DESIGN.md). Every artifact stays under the ignored
 `build/` folder: never commit or share the executable, the lifted C, the
@@ -20,7 +24,7 @@ GAME="$HOME/.local/share/Steam/steamapps/common/The Binding of Isaac Rebirth"
 - **The game**: your own purchased copy of The Binding of Isaac: Rebirth with
   Repentance+, version **v1.9.7.17**, and its executable in the form described
   in step 2. Every address used here is tied to that exact binary.
-- Python 3.11+, Node.js 20+, Git, GCC, Docker.
+- Python 3.12+ (pypcode 4.0.1 requires it), Node.js 20+, Git, GCC, Docker.
 - [Ghidra 12.1.2](https://github.com/NationalSecurityAgency/ghidra/releases)
   (`ghidra_12.1.2_PUBLIC_20260605.zip`, SHA256
   `b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d`) and the
@@ -148,6 +152,8 @@ python scripts/recomp/lift/lift_parallel.py --jobs 6 \
   --dispatch auto --max-insns 100000 --split-va 0x30000 --trace-va \
   --out output/recomp/lift/gu --module lifted \
   --stats output/recomp/lift/gu/stats.json
+python scripts/recomp/lift/patch_reentry.py --dir output/recomp/lift/gu \
+  --exe tools/isaac-ng.unpacked.exe
 cp -a output/recomp/lift/gu output/recomp/lift/gu.pristine
 ```
 
@@ -217,8 +223,8 @@ python3 host/build_native.py --profile switch
 
 The script re-runs itself inside that pinned devkitA64 image, without
 network, compiles everything for the Cortex-A57 and writes
-`build/browsing-native/switch/isaac-browsing.nro` (title "Isaac (browsing
-lift)", with `isaac.segs.bin` and `instance_index.json` in its RomFS). It
+`build/browsing-native/switch/isaac-repentance-ns1-recomp.nro` (title "ISAAC REPENTANCE+
+NS1 RECOMP", with `isaac.segs.bin` and `instance_index.json` in its RomFS). It
 prints the NRO's SHA256 at the end. Installation is described in
 [PLAYING.md](PLAYING.md#installing-on-the-switch).
 
@@ -236,7 +242,7 @@ is devkitPro's client, kept here in `build/sdk-tools/`):
 ```sh
 python3 tools/probe_switch_nxlink.py --address <switch-ip>
 python3 tools/run_switch_tests.py --address <switch-ip> \
-  --nro build/browsing-native/switch/isaac-browsing.nro --nxlink build/sdk-tools/nxlink \
+  --nro build/browsing-native/switch/isaac-repentance-ns1-recomp.nro --nxlink build/sdk-tools/nxlink \
   --graphics --audio --return-to-sphaira --timeout 600
 ```
 

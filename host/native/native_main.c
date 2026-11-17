@@ -513,6 +513,47 @@ static void restore_tree_as(const char *rel, const char *key) {
 
 /* ---- main --------------------------------------------------------------- */
 
+static uint8_t *read_file(const char *path, uint32_t *len);
+
+/* options.ini with Fullscreen=<on>: full screen is the zoomed view when the
+ * platform sets ISAAC_NATIVE_FULLSCREEN_VIEW (patch 0008). `base` is the
+ * text to change; the result is malloc'd, NULL when nothing needed to. */
+static char *options_with_fullscreen(const char *base, size_t len, int on, size_t *out_len) {
+    char *buf = malloc(len + 16);
+    if (!buf) return NULL;
+    memcpy(buf, base, len);
+    for (size_t i = 0; i + 11 < len; ++i) {
+        if ((i == 0 || buf[i - 1] == '\n') && !memcmp(buf + i, "Fullscreen=", 11)) {
+            if (buf[i + 11] == (on ? '1' : '0')) { free(buf); return NULL; }
+            buf[i + 11] = on ? '1' : '0';
+            *out_len = len;
+            return buf;
+        }
+    }
+    len += (size_t)sprintf(buf + len, "Fullscreen=%d\r\n", on ? 1 : 0);
+    *out_len = len;
+    return buf;
+}
+
+/* ISAAC_NATIVE_FULLSCREEN_ON=1: turn Fullscreen on in the saved options.ini
+ * once (the Switch does it at the first start of a build with the zoom, so
+ * players who already have an options.ini see the default too). */
+static void force_fullscreen_option(void) {
+    char path[1300];
+    snprintf(path, sizeof path, "%s/%s", g_save_dir, store_rel(OPTIONS_KEY, NULL));
+    uint32_t n = 0;
+    uint8_t *old = read_file(path, &n);
+    if (!old) return;                     /* none saved: the default is already on */
+    size_t len = 0;
+    char *text = options_with_fullscreen((const char *)old, n, 1, &len);
+    free(old);
+    if (!text) return;
+    isaac_fs_seed(OPTIONS_KEY, (const uint8_t *)text, (uint32_t)len);
+    persist(OPTIONS_KEY, NULL, (const uint8_t *)text, (uint32_t)len);
+    printf("[native] options.ini: Fullscreen=1 (the zoomed view)\n");
+    free(text);
+}
+
 static uint8_t *read_file(const char *path, uint32_t *len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -582,10 +623,17 @@ int isaac_native_main(int argc, char **argv) {
     if (mods && *mods == '1') seed_mods();
     const char *bench = getenv("ISAAC_NATIVE_BENCH"), *bench_mod = getenv("ISAAC_NATIVE_BENCH_MOD");
     if (bench && *bench && bench_mod && *bench_mod) seed_bench_mod(bench_mod, bench);
-    if (!getenv("ISAAC_NATIVE_NO_OPTIONS"))
-        printf("[native] seed options.ini -> %s\n",
-               isaac_fs_seed(OPTIONS_KEY, (const uint8_t *)DEFAULT_OPTIONS,
-                             (uint32_t)(sizeof DEFAULT_OPTIONS - 1)) ? "ok" : "FAIL");
+    const char *fs_view = getenv("ISAAC_NATIVE_FULLSCREEN_VIEW");
+    int zoom = fs_view && *fs_view;
+    if (!getenv("ISAAC_NATIVE_NO_OPTIONS")) {
+        /* With a zoomed full screen it is the default, as on the console releases. */
+        size_t len = sizeof DEFAULT_OPTIONS - 1;
+        char *text = zoom ? options_with_fullscreen(DEFAULT_OPTIONS, len, 1, &len) : NULL;
+        printf("[native] seed options.ini%s -> %s\n", text ? " (Fullscreen=1)" : "",
+               isaac_fs_seed(OPTIONS_KEY, (const uint8_t *)(text ? text : DEFAULT_OPTIONS),
+                             (uint32_t)len) ? "ok" : "FAIL");
+        free(text);
+    }
 
     if (g_save_dir[0]) {
         isaac_fs_set_persist_hooks(persist, unlink_saved);
@@ -603,6 +651,8 @@ int isaac_native_main(int argc, char **argv) {
                    g_mod_dirs[i].folder, g_mod_dirs[i].dir);
         }
         printf("[native] ISAAC_SAVE_DIR=%s: %u saved file(s) restored\n", g_save_dir, g_restored);
+        const char *force = getenv("ISAAC_NATIVE_FULLSCREEN_ON");
+        if (zoom && force && *force == '1') force_fullscreen_option();
     }
 
     /* The host's QueryPerformanceCounter is deterministic by default (100 ns

@@ -139,11 +139,20 @@ static int g_render_thread = 1;   /* GL on its own core (native_glq.c, ISAAC_NAT
 #ifndef ISAAC_NO_STEAM
 static int g_steam_sync = 1;      /* sync the saves with Steam Cloud          */
 static int g_sync_prompt = 1;     /* ask on a conflict instead of newest-wins */
+static int g_auto_upload = 1;     /* upload the saves when the game closes    */
 #endif
 static int g_launcher = 1;        /* the launch screen, with its Play button  */
 static int g_check_files = 1;     /* no Play while the game's files are incomplete */
+static int g_zoom = 100;          /* full screen's zoom, 0..100 (patch 0008)  */
+static int g_zoom_new;            /* settings.ini had no zoom line: first start with it */
+/* Also in the panel (hold - and press +), whose X writes it back here. */
+#define AUTO_UPLOAD_TEXT \
+    "# Upload the saves to Steam Cloud when the game closes. In the game,\n" \
+    "# hold - and press + for the Steam Cloud panel: it uploads at once (A)\n" \
+    "# and turns this on or off (X).\n" \
+    "auto_upload=1\n"
 static const char SETTINGS_DEFAULT[] =
-    "# Isaac (browsing lift) on Switch. 1 = on, 0 = off.\n"
+    "# ISAAC REPENTANCE+ NS1 RECOMP. 1 = on, 0 = off.\n"
     "\n"
     "# Draw Nintendo Switch buttons instead of the Xbox ones.\n"
     "switch_glyphs=1\n"
@@ -168,6 +177,12 @@ static const char SETTINGS_DEFAULT[] =
     "# cut short by a copy; Play stays off when they are not. 0: no check.\n"
     "check_game_files=1\n"
     "\n"
+    "# Options -> Fullscreen in the game zooms in on the room, as the\n"
+    "# console releases do; Fullscreen off is the PC view. How much: 100\n"
+    "# shows 426x240 points of the room instead of 480x270, the most the\n"
+    "# game allows; 0 makes Fullscreen look like the PC view.\n"
+    "zoom=100\n"
+    "\n"
 #ifndef ISAAC_NO_STEAM
     "# Save sync with Steam Cloud, straight from the console. The launch\n"
     "# screen signs in with a QR code and keeps steam-token.txt next to this\n"
@@ -178,6 +193,8 @@ static const char SETTINGS_DEFAULT[] =
     "# 0: the newest copy wins without asking.\n"
     "sync_prompt=1\n"
     "\n"
+    AUTO_UPLOAD_TEXT
+    "\n"
     "# Before the game, a screen with the Steam Cloud sync and a Play button.\n"
     "# 0: sync without a screen (the newest copy wins a conflict) and start\n"
     "# the game straight away.\n"
@@ -187,6 +204,15 @@ static const char SETTINGS_DEFAULT[] =
 #endif
     "launcher=1\n";
 
+static const char SETTINGS_ZOOM[] =
+    "\n"
+    "# Options -> Fullscreen in the game zooms in on the room, as the\n"
+    "# console releases do; Fullscreen off is the PC view. How much: 100\n"
+    "# shows 426x240 points of the room instead of 480x270, the most the\n"
+    "# game allows; 0 makes Fullscreen look like the PC view.\n"
+    "zoom=100\n"
+;
+
 static void load_settings(void) {
     FILE *f = fopen(ROOT "/settings.ini", "r");
     if (!f) {
@@ -194,6 +220,7 @@ static void load_settings(void) {
         return;
     }
     char line[256];
+    int has_zoom = 0, has_auto = 0;
     while (fgets(line, sizeof line, f)) {
         char *v = strchr(line, '=');
         if (line[0] == '#' || !v) continue;
@@ -207,13 +234,73 @@ static void load_settings(void) {
 #ifndef ISAAC_NO_STEAM
         else if (!strcmp(k, "steam_sync")) g_steam_sync = atoi(v) != 0;
         else if (!strcmp(k, "sync_prompt")) g_sync_prompt = atoi(v) != 0;
+        else if (!strcmp(k, "auto_upload")) { g_auto_upload = atoi(v) != 0; has_auto = 1; }
 #endif
         else if (!strcmp(k, "check_game_files")) g_check_files = atoi(v) != 0;
         else if (!strcmp(k, "launcher")) g_launcher = atoi(v) != 0;
+        else if (!strcmp(k, "zoom")) { g_zoom = atoi(v); has_zoom = 1; }
     }
     fclose(f);
+    if (g_zoom < 0) g_zoom = 0;
+    if (g_zoom > 100) g_zoom = 100;
+    /* A settings.ini from before the zoom: add its line, and turn the game's
+     * Fullscreen on this once so the default is the console's view. */
+    if (!has_zoom && (f = fopen(ROOT "/settings.ini", "a"))) {
+        fputs(SETTINGS_ZOOM, f);
+        fclose(f);
+        g_zoom_new = 1;
+    }
+#ifndef ISAAC_NO_STEAM
+    if (!has_auto && (f = fopen(ROOT "/settings.ini", "a"))) {
+        fputs("\n" AUTO_UPLOAD_TEXT, f);
+        fclose(f);
+    }
+#else
+    (void)has_auto;
+#endif
+}
+
+/* Rewrites one `key=value` line of settings.ini, the comments kept; added at
+ * the end when it is not there. */
+static void settings_set(const char *key, int value) {
+    FILE *f = fopen(ROOT "/settings.ini", "r");
+    char *text = NULL;
+    size_t len = 0, cap = 0;
+    char line[512];
+    int done = 0;
+    size_t klen = strlen(key);
+    while (f && fgets(line, sizeof line, f)) {
+        char out[540];
+        const char *k = line + strspn(line, " \t");
+        if (!done && line[0] != '#' && !strncmp(k, key, klen) && (k[klen] == '=' || k[klen] == ' ')) {
+            snprintf(out, sizeof out, "%s=%d\n", key, value);
+            done = 1;
+        } else {
+            snprintf(out, sizeof out, "%s", line);
+        }
+        size_t n = strlen(out);
+        if (len + n + 1 > cap) {
+            cap = (len + n + 1) * 2;
+            char *t = realloc(text, cap);
+            if (!t) { free(text); fclose(f); return; }
+            text = t;
+        }
+        memcpy(text + len, out, n + 1);
+        len += n;
+    }
+    if (f) fclose(f);
+    if ((f = fopen(ROOT "/settings.ini", "w"))) {
+        if (text) fputs(text, f);
+        if (!done) fprintf(f, "%s=%d\n", key, value);
+        fclose(f);
+    }
+    free(text);
 }
 #define PLUS_TAP_MS 400
+
+#ifndef ISAAC_NO_STEAM
+static int panel_pad(u64 b, int play, uint64_t now);
+#endif
 
 int isaac_native_pad_state(int slot, uint8_t *out) {
     if (slot != 0 || !g_pad_ready || !padIsConnected(&g_pad)) return 0;
@@ -223,6 +310,18 @@ int isaac_native_pad_state(int slot, uint8_t *out) {
     int play = in_play(tick, now), mcm = isaac_native_mod_menu_open();
     if (mcm) play = 0;
     uint16_t w = 0;
+#ifndef ISAAC_NO_STEAM
+    /* The Steam Cloud panel has the pad while it is up: the game gets a
+     * neutral one (and START once, to pause a run, when it opens). */
+    if (panel_pad(b, play, now)) {
+        if (now < g_plus.start_until) w |= 0x0010;
+        ++g_packet;
+        memset(out, 0, 16);
+        memcpy(out + 0, &g_packet, 4);
+        memcpy(out + 4, &w, 2);
+        return 1;
+    }
+#endif
     if (b & HidNpadButton_Up) w |= 0x0001;
     if (b & HidNpadButton_Down) w |= 0x0002;
     if (b & HidNpadButton_Left) w |= 0x0004;
@@ -411,10 +510,22 @@ static int g_pulled;
 
 /* Every line goes to the stage log; with a screen up, the lines native_steamcm.c
  * writes as it gets through the connection also move the steps along. */
+static void panel_log(const char *line);
+static char g_push_done[96];         /* "push done, N uploaded, M failed" */
 static void sync_log(void *user, const char *line) {
     (void)user;
     stage("%s", line);
-    if (!g_ln_on) return;
+    panel_log(line);
+    const char *done = strstr(line, "push done, ");
+    if (done) snprintf(g_push_done, sizeof g_push_done, "%s", done);
+    if (!g_ln_on) {
+        const char *s = !strncmp(line, "steam sync: ", 12) ? line + 12 : line;
+        if (strncmp(s, "downloaded ", 11) && strncmp(s, "uploaded ", 9) && !strstr(s, ": downloaded ") &&
+            !strstr(s, ": uploaded ") && strncmp(s, "push", 4) && strncmp(s, "CM list", 7) &&
+            strncmp(s, "websocket", 9) && strncmp(s, "logged on", 9) && strncmp(s, "cloud: ", 7))
+            snprintf(g_sync_last, sizeof g_sync_last, "%s", s);
+        return;
+    }
     const char *s = !strncmp(line, "steam sync: ", 12) ? line + 12 : line;
     int n, cell;
     char host[96];
@@ -489,7 +600,12 @@ static int ask_conflict(void *user, const char *slot, const char *local_desc, co
     return choice;
 }
 
-/* 0 when the pull or push ran to the end. */
+/* The account the token names, for the panel ("Steam · …1234567"). */
+static char g_account[32];
+
+/* 0 when the pull or push ran to the end. `push`: 0 pull, 1 the push when
+ * the game closes, 2 an upload from the panel (it keeps the pull marker, so
+ * the session can upload again). */
 static int steam_sync_do(int push) {
     if (!isaac_steamcm_available()) {
         stage("steam sync: this build has no Steam transport");
@@ -512,6 +628,8 @@ static int steam_sync_do(int push) {
         }
         return -1;
     }
+    snprintf(g_account, sizeof g_account, "Steam \xc2\xb7 \xe2\x80\xa6%07llu",
+             (unsigned long long)(steamid % 10000000u));
     if (g_ln_on) {
         pthread_mutex_lock(&g_ln_lock);
         snprintf(g_ln.account, sizeof g_ln.account, "Steam \xc2\xb7 \xe2\x80\xa6%07llu",
@@ -548,6 +666,7 @@ static int steam_sync_do(int push) {
     cfg.token = token;
     cfg.prompt = g_sync_prompt;
     cfg.timeout_ms = 15000;
+    cfg.keep_pull_marker = push == 2;
     g_sync_last[0] = 0;
     isaac_steamsync_set_log(sync_log, NULL);
     isaac_steamcm_set_log(sync_log, NULL);
@@ -588,14 +707,37 @@ static int steam_sync_do(int push) {
     return rc;
 }
 
+static void panel_finish(void);
+
+/* What the last upload when the game closed came to: the panel shows it at
+ * the next start, so a failure there is not silent. */
+#define LAST_PUSH_PATH ROOT "/saves/steam-sync-last-exit-upload.txt"
+
 /* Without the screen (launcher=0), and for the push after the game. */
 static void steam_sync_run(int push) {
+    if (push) panel_finish();
     if (!g_steam_sync) return;
+    if (push && !g_auto_upload) {
+        stage("steam sync: auto_upload=0, not uploading at exit");
+        return;
+    }
     if (push && !g_pulled) {
         stage("steam sync: no pull completed in this run, not uploading");
         return;
     }
-    steam_sync_do(push);
+    int rc = steam_sync_do(push);
+    if (push) {
+        FILE *f = fopen(LAST_PUSH_PATH, "w");
+        if (f) {
+            time_t now = time(NULL);
+            char when[32];
+            struct tm tm;
+            strftime(when, sizeof when, "%Y-%m-%d %H:%M", localtime_r(&now, &tm));
+            if (rc == 0) fprintf(f, "ok %s\n", when);
+            else fprintf(f, "failed %s %s\n", when, g_sync_last[0] ? g_sync_last : "the upload did not finish");
+            fclose(f);
+        }
+    }
 }
 
 static void *sync_thread(void *p) {
@@ -802,6 +944,215 @@ static void *signout_thread(void *p) {
     g_ln_busy = 0;
     pthread_mutex_unlock(&g_ln_lock);
     return NULL;
+}
+
+/* ---- the in-game Steam Cloud panel ------------------------------------------
+ * Hold - and press + anywhere in the game: a panel over the game (native_gl.c
+ * draws it, native_launcher.c paints it) uploads the saves now (A), turns the
+ * upload when the game closes on or off (X, written to settings.ini), and
+ * closes with B or - and + again. A run is paused when it opens. The upload
+ * runs on its own thread and keeps the pull marker, so the session can upload
+ * again and still upload when it closes. */
+void isaac_native_overlay_set(const uint32_t *px, int w, int h);
+
+static pthread_mutex_t g_pn_lock = PTHREAD_MUTEX_INITIALIZER;
+static isaac_panel_view g_pn;          /* under g_pn_lock */
+static int g_pn_open, g_pn_latch, g_pn_busy, g_pn_thread_live, g_pn_dirty;
+static u64 g_pn_prev;
+static pthread_t g_pn_thread;
+static uint32_t *g_pn_px;
+static void *g_pn_font;
+static int g_pn_font_ok = -1;          /* -1 not tried, 0 failed, 1 loaded */
+static unsigned g_pn_frames;
+
+/* The progress lines of a panel upload, as the footer of the launch screen shows them. */
+static void panel_log(const char *line) {
+    if (!g_pn_busy) return;
+    const char *s = !strncmp(line, "steam sync: ", 12) ? line + 12 : line;
+    pthread_mutex_lock(&g_pn_lock);
+    snprintf(g_pn.detail, sizeof g_pn.detail, "%s", s);
+    g_pn_dirty = 1;
+    pthread_mutex_unlock(&g_pn_lock);
+}
+
+/* The console's shared font, copied: the pl service is closed again at once
+ * (hbloader keeps one process, and a session left open leaks into the next NRO). */
+static int panel_font(void) {
+    if (g_pn_font_ok >= 0) return g_pn_font_ok;
+    g_pn_font_ok = 0;
+    if (R_FAILED(plInitialize(PlServiceType_User))) return 0;
+    PlFontData font;
+    if (R_SUCCEEDED(plGetSharedFontByType(&font, PlSharedFontType_Standard)) &&
+        (g_pn_font = malloc(font.size))) {
+        memcpy(g_pn_font, font.address, font.size);
+        if (isaac_launcher_set_font(g_pn_font, font.size) == 0) g_pn_font_ok = 1;
+    }
+    plExit();
+    stage("panel: font %s", g_pn_font_ok ? "loaded" : "FAILED");
+    return g_pn_font_ok;
+}
+
+/* The state the panel opens in, from what the session knows. */
+static void panel_reset_locked(void) {
+    g_pn.auto_upload = g_auto_upload;
+    snprintf(g_pn.account, sizeof g_pn.account, "%s", g_account);
+    if (!g_steam_sync) {
+        g_pn.state = ISAAC_PANEL_UNAVAILABLE;
+        snprintf(g_pn.message, sizeof g_pn.message, "Steam Cloud sync is off");
+        snprintf(g_pn.detail, sizeof g_pn.detail, "steam_sync=0 in settings.ini. Your saves stay on this console.");
+    } else if (!g_pulled) {
+        g_pn.state = ISAAC_PANEL_UNAVAILABLE;
+        snprintf(g_pn.message, sizeof g_pn.message, "Nothing can be uploaded this session");
+        snprintf(g_pn.detail, sizeof g_pn.detail,
+                 "The sync before the game did not finish%s%s, so this console could not compare its saves "
+                 "with Steam Cloud. Start the game again to sync.",
+                 g_sync_last[0] ? ": " : "", g_sync_last[0] ? g_sync_last : "");
+    } else if (g_pn.state != ISAAC_PANEL_DONE && g_pn.state != ISAAC_PANEL_FAILED) {
+        g_pn.state = ISAAC_PANEL_READY;
+        snprintf(g_pn.message, sizeof g_pn.message, "Send your saves to Steam Cloud now");
+        char last[200] = "";
+        FILE *f = fopen(LAST_PUSH_PATH, "r");
+        if (f) {
+            if (!fgets(last, sizeof last, f)) last[0] = 0;
+            fclose(f);
+            last[strcspn(last, "\r\n")] = 0;
+        }
+        if (!strncmp(last, "failed ", 7))
+            snprintf(g_pn.detail, sizeof g_pn.detail,
+                     "The upload when the game last closed failed (%s). Saves that changed since the last sync go up.",
+                     last + 7);
+        else
+            snprintf(g_pn.detail, sizeof g_pn.detail, "Saves that changed since the last sync go up; the rest stay as they are.");
+    }
+    g_pn_dirty = 1;
+}
+
+static void *panel_upload_thread(void *p) {
+    (void)p;
+    g_push_done[0] = 0;
+    int rc = steam_sync_do(2);
+    pthread_mutex_lock(&g_pn_lock);
+    g_pn_busy = 0;
+    char last[160];
+    snprintf(last, sizeof last, "%s", g_sync_last);
+    if (rc == 0) {
+        g_pn.state = ISAAC_PANEL_DONE;
+        int up = 0, failed = 0;
+        if (sscanf(g_push_done, "push done, %d uploaded, %d failed", &up, &failed) < 1) up = -1;
+        if (up == 0) snprintf(g_pn.message, sizeof g_pn.message, "Steam Cloud already has these saves");
+        else if (up > 0) snprintf(g_pn.message, sizeof g_pn.message, "Uploaded %d save%s", up, up == 1 ? "" : "s");
+        else snprintf(g_pn.message, sizeof g_pn.message, "Uploaded");
+        time_t now = time(NULL);
+        struct tm tm;
+        char when[16];
+        strftime(when, sizeof when, "%H:%M", localtime_r(&now, &tm));
+        snprintf(g_pn.detail, sizeof g_pn.detail, "Steam Cloud has what this console has (%s).", when);
+    } else {
+        g_pn.state = ISAAC_PANEL_FAILED;
+        snprintf(g_pn.message, sizeof g_pn.message, "Upload failed");
+        snprintf(g_pn.detail, sizeof g_pn.detail, "%s. Your saves stay on this console; A tries again.",
+                 last[0] ? last : "The upload did not finish");
+    }
+    g_pn_dirty = 1;
+    pthread_mutex_unlock(&g_pn_lock);
+    stage("panel: upload %s", rc == 0 ? "done" : "failed");
+    return NULL;
+}
+
+static void panel_show(void) {
+    if (!g_pn_px) g_pn_px = malloc((size_t)ISAAC_PANEL_W * ISAAC_PANEL_H * 4);
+    if (!g_pn_px) return;
+    pthread_mutex_lock(&g_pn_lock);
+    g_pn.t = (float)(now_ms() % 100000u) / 1000.0f;
+    isaac_panel_draw(g_pn_px, &g_pn);
+    g_pn_dirty = 0;
+    pthread_mutex_unlock(&g_pn_lock);
+    isaac_native_overlay_set(g_pn_px, ISAAC_PANEL_W, ISAAC_PANEL_H);
+}
+
+/* 1 while the panel has the pad: open, or its buttons still held after it closed. */
+static int panel_pad(u64 b, int play, uint64_t now) {
+    u64 down = b & ~g_pn_prev;
+    g_pn_prev = b;
+    int combo = (b & HidNpadButton_Minus) && (down & HidNpadButton_Plus);
+    if (!g_pn_open) {
+        if (!combo) {
+            /* the buttons the panel used reach the game only once let go
+             * (B would otherwise unpause the run the panel paused) */
+            if (g_pn_latch && !(b & (HidNpadButton_Minus | HidNpadButton_Plus | HidNpadButton_A |
+                                     HidNpadButton_B | HidNpadButton_X | HidNpadButton_Y)))
+                g_pn_latch = 0;
+            return g_pn_latch;
+        }
+        if (!panel_font()) return 0;
+        g_pn_open = 1;
+        g_pn_latch = 1;
+        stage("panel: open%s", play ? " (run paused)" : "");
+        /* + went down with - held: the game never saw it; drop what it started */
+        if (g_plus.r_down && isaac_native_input_key("r", 0)) g_plus.r_down = 0;
+        g_plus.held = 0;
+        g_plus.start_until = play ? now + 100 : 0;
+        pthread_mutex_lock(&g_pn_lock);
+        if (!g_pn_busy) panel_reset_locked();
+        pthread_mutex_unlock(&g_pn_lock);
+        panel_show();
+        return 1;
+    }
+    if (combo || (down & HidNpadButton_B)) {
+        g_pn_open = 0;
+        isaac_native_overlay_set(NULL, 0, 0);
+        stage("panel: closed");
+        return 1;
+    }
+    if (down & HidNpadButton_X) {
+        g_auto_upload = !g_auto_upload;
+        settings_set("auto_upload", g_auto_upload);
+        stage("panel: auto_upload=%d", g_auto_upload);
+        pthread_mutex_lock(&g_pn_lock);
+        g_pn.auto_upload = g_auto_upload;
+        g_pn_dirty = 1;
+        pthread_mutex_unlock(&g_pn_lock);
+    }
+    if ((down & HidNpadButton_A) && !g_pn_busy && g_steam_sync && g_pulled) {
+        if (g_pn_thread_live) { pthread_join(g_pn_thread, NULL); g_pn_thread_live = 0; }
+        pthread_mutex_lock(&g_pn_lock);
+        g_pn_busy = 1;
+        g_pn.state = ISAAC_PANEL_BUSY;
+        snprintf(g_pn.message, sizeof g_pn.message, "Uploading\xe2\x80\xa6");
+        snprintf(g_pn.detail, sizeof g_pn.detail, "Connecting to Steam");
+        g_pn_dirty = 1;
+        pthread_mutex_unlock(&g_pn_lock);
+        stage("panel: upload");
+        if (pthread_create(&g_pn_thread, NULL, panel_upload_thread, NULL) == 0) {
+            g_pn_thread_live = 1;
+        } else {
+            pthread_mutex_lock(&g_pn_lock);
+            g_pn_busy = 0;
+            g_pn.state = ISAAC_PANEL_FAILED;
+            snprintf(g_pn.message, sizeof g_pn.message, "Upload failed");
+            snprintf(g_pn.detail, sizeof g_pn.detail, "The upload thread could not start.");
+            pthread_mutex_unlock(&g_pn_lock);
+        }
+    }
+    /* redraw on a change, and every few calls while the spinner turns */
+    if (g_pn_dirty || (g_pn_busy && ++g_pn_frames % 3 == 0)) panel_show();
+    return 1;
+}
+
+/* After the game: wait for an upload still running, free the panel. */
+static void panel_finish(void) {
+    if (g_pn_thread_live) {
+        if (g_pn_busy) stage("panel: waiting for the upload");
+        pthread_join(g_pn_thread, NULL);
+        g_pn_thread_live = 0;
+    }
+    g_pn_open = 0;
+    free(g_pn_px);
+    g_pn_px = NULL;
+    if (g_pn_font_ok == 1) isaac_launcher_release();
+    free(g_pn_font);
+    g_pn_font = NULL;
+    g_pn_font_ok = -1;
 }
 
 #else /* ISAAC_NO_STEAM */
@@ -1176,8 +1527,9 @@ int main(int argc, char **argv) {
     heap_report();
     mkdir(ROOT, 0777);
     load_settings();
-    stage("settings: switch_glyphs=%d a_accepts=%d frame_skip=%d render_thread=%d launcher=%d check_game_files=%d",
-          g_switch_glyphs, g_a_accepts, g_frame_skip, g_render_thread, g_launcher, g_check_files);
+    stage("settings: switch_glyphs=%d a_accepts=%d frame_skip=%d render_thread=%d launcher=%d check_game_files=%d zoom=%d%s",
+          g_switch_glyphs, g_a_accepts, g_frame_skip, g_render_thread, g_launcher, g_check_files, g_zoom,
+          g_zoom_new ? " (new)" : "");
 #ifndef ISAAC_NO_STEAM
     stage("settings: steam_sync=%d prompt=%d", g_steam_sync, g_sync_prompt);
 #endif
@@ -1245,6 +1597,14 @@ int main(int argc, char **argv) {
             mods = 1;                    /* play mode: the instance's mods/ is mounted */
             setenv("ISAAC_NATIVE_WALL_CLOCK", "1", 1);   /* real time, as the web build plays */
             setenv("ISAAC_RENDER_GATE", g_frame_skip == 2 ? "4" : g_frame_skip == 1 ? "1" : "0", 0);
+            /* Full screen: a window of 540 rows down to 480 (zoom=100), 16:9,
+             * which the engine fills with 270 down to 240 points (patch 0008). */
+            static char view[24];
+            int vh = 540 - (60 * g_zoom + 50) / 100, vw = (vh * 16 / 9) & ~1;
+            snprintf(view, sizeof view, "%dx%d", vw, vh);
+            setenv("ISAAC_NATIVE_FULLSCREEN_VIEW", view, 0);
+            if (g_zoom_new) setenv("ISAAC_NATIVE_FULLSCREEN_ON", "1", 0);
+            stage("full screen view %s%s", view, g_zoom_new ? ", turned on once" : "");
         }
         if (bench) {
             static char from[16], to[16];

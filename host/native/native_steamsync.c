@@ -1,4 +1,5 @@
 /* The save sync state machine. See native_steamsync.h for the rules. */
+#define _POSIX_C_SOURCE 200809L   /* localtime_r under -std=c11 (the host tests) */
 #include "native_steamsync.h"
 
 #include <errno.h>
@@ -535,9 +536,11 @@ int isaac_steamsync_push_with(const isaac_steamsync_cfg *cfg, const isaac_steam_
         say("steam sync: %s: uploaded %zu bytes", SLOTS[slot].cloud, len);
     }
     state_write(cfg);
-    char marker[512];
-    marker_path(cfg, marker, sizeof marker);
-    remove(marker);
+    if (!cfg->keep_pull_marker) {
+        char marker[512];
+        marker_path(cfg, marker, sizeof marker);
+        remove(marker);
+    }
     say("steam sync: push done, %d uploaded, %d failed", uploaded, failed);
     return failed ? -1 : 0;
 }

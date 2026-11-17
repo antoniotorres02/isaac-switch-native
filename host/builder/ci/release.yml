@@ -1,0 +1,56 @@
+# Builds the program for Windows and Linux on a tag vX.Y.Z and attaches it to
+# the release. isb/image.json must already name the published image's digest.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  program:
+    strategy:
+      matrix:
+        os: [windows-2022, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The program must name a published image
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: python
+        run: |
+          import json, sys
+          info = json.load(open("host/builder/isb/image.json"))
+          sys.exit(0 if info["digest"].startswith("sha256:") else "isb/image.json has no digest: publish the image first")
+      - run: python -m pip install pyinstaller==6.16.0
+      - run: python tools/test_builder.py
+      - run: python host/builder/package.py --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: program-${{ matrix.os }}
+          path: dist/*
+  release:
+    needs: program
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body: |
+            **You need the game's executable WITHOUT Steam's DRM. This program does not remove it,
+            nor explain how.** See GUIDE.md and host/builder/README.md.
+
+            - **Windows**: download `isaac-switch-builder.exe` and double-click it. If Docker Desktop is
+              missing, the program offers to install it. *Not tested on a Windows machine yet.*
+            - **Linux** (x86-64): download `isaac-switch-builder-linux`, `chmod +x` it and run it. Docker
+              Engine required; the program tells you how to get it.
+
+            Do not share the NRO you build: it holds the game's executable image.

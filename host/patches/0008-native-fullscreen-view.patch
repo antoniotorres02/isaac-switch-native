@@ -1,0 +1,119 @@
+--- a/scripts/recomp/host/src/host_shims_win.c
++++ b/scripts/recomp/host/src/host_shims_win.c
+@@ -47,6 +47,64 @@
+     return -1;
+ }
+ 
++#ifdef ISAAC_NATIVE
++/* Native: the game's window (GLFW's "GLFW30" class) is the drawing surface,
++ * which has no frame and a fixed size (native_gl.c's SURFACE_W/H). The
++ * engine takes its point scale from the window's client size (0x954320:
++ * floor(min(h/240, w/400)), 480x270 points at 960x540), so the size it is
++ * given decides how much of the room fits on screen.
++ *
++ * Windowed, that is always the surface. Full screen (Options -> Fullscreen,
++ * or Fullscreen=1 in options.ini) GLFW sizes the window to the monitor, the
++ * display below; ISAAC_NATIVE_FULLSCREEN_VIEW=<w>x<h> answers that with a
++ * smaller window instead, which the engine fills with fewer points: the
++ * zoomed view of the console releases (852x480: 426x240 points). Below
++ * 480 rows or 800 columns the scale drops to 1 and the view zooms out, so
++ * the size is clamped. Unset, full screen keeps the surface's size. */
++#define NATIVE_SURFACE_W 960
++#define NATIVE_SURFACE_H 540
++static int g_fs_w, g_fs_h, g_fs_read;
++static int win_is_game(const char *cls) {
++    return cls && strncmp(cls, "GLFW3", 5) == 0 && !strstr(cls, "Helper");
++}
++static void native_window_size(uint32_t *w, uint32_t *h) {
++    if (!g_fs_read) {
++        g_fs_read = 1;
++        const char *e = getenv("ISAAC_NATIVE_FULLSCREEN_VIEW");
++        int fw = 0, fh = 0;
++        if (e && sscanf(e, "%dx%d", &fw, &fh) == 2) {
++            if (fw > NATIVE_SURFACE_W) fw = NATIVE_SURFACE_W;
++            if (fh > NATIVE_SURFACE_H) fh = NATIVE_SURFACE_H;
++            if (fw < 800) fw = 800;
++            if (fh < 480) fh = 480;
++            g_fs_w = fw;
++            g_fs_h = fh;
++            isaac_log("[isaac][ui] full screen is a %dx%d window", fw, fh);
++        }
++    }
++    /* The engine's borderless full screen asks for one column more than
++     * the display (1281x720), so a size that covers it counts. */
++    if (*w >= DISPLAY_W && *h >= DISPLAY_H && g_fs_w) {
++        *w = (uint32_t)g_fs_w;
++        *h = (uint32_t)g_fs_h;
++        return;
++    }
++    *w = NATIVE_SURFACE_W;
++    *h = NATIVE_SURFACE_H;
++}
++/* The game window's client size: what the engine draws into, from the
++ * bottom-left corner of the surface. */
++void isaac_native_view_size(int *w, int *h) {
++    *w = NATIVE_SURFACE_W;
++    *h = NATIVE_SURFACE_H;
++    for (int i = 0; i < g_win_n; ++i)
++        if (g_win[i].cls >= 0 && win_is_game(g_wc[g_win[i].cls].name)) {
++            *w = (int)g_win[i].w;
++            *h = (int)g_win[i].h;
++        }
++}
++#endif
++
+ /* Resolve a WNDCLASS/WNDCLASSEX class-name argument: a MAKEINTRESOURCE atom
+  * (high word 0) or a guest pointer to a (wide or ansi) string. */
+ static const char *win_class_of(uint32_t name_va, int wide, char *buf,
+@@ -114,6 +172,9 @@
+     g_win[g_win_n].cls = -1;
+     for (int i = 0; i < g_wc_n; ++i)
+         if (strcmp(g_wc[i].name, c) == 0) { g_win[g_win_n].cls = i; break; }
++#ifdef ISAAC_NATIVE
++    if (win_is_game(c)) native_window_size(&g_win[g_win_n].w, &g_win[g_win_n].h);
++#endif
+     ++g_win_n;
+     isaac_log("[isaac][ui] CreateWindowEx%c class=\"%s\" title=\"%s\" "
+               "style=0x%08x %ux%u -> hwnd 0x%08x",
+@@ -348,7 +409,22 @@
+     cpu->EAX = 1;
+ }
+ void imp_user32__SetWindowPos(CpuState *restrict cpu) {
+-    (void)cpu;
++#ifdef ISAAC_NATIVE
++    /* BOOL SetWindowPos(hwnd, after, x, y, cx, cy, flags): GLFW resizes the
++     * game window this way when it enters or leaves full screen, and the
++     * engine reads the client size back at once. SWP_NOSIZE = 1. */
++    uint32_t hwnd = isaac_arg(cpu, 0), cx = isaac_arg(cpu, 4), cy = isaac_arg(cpu, 5),
++             flags = isaac_arg(cpu, 6);
++    int i = win_find_hwnd(hwnd);
++    if (i >= 0 && !(flags & 1u) && g_win[i].cls >= 0 && win_is_game(g_wc[g_win[i].cls].name)) {
++        uint32_t rw = cx, rh = cy;
++        native_window_size(&cx, &cy);
++        isaac_log("[isaac][ui] SetWindowPos %ux%u: game window %ux%u -> %ux%u", rw, rh,
++                  g_win[i].w, g_win[i].h, cx, cy);
++        g_win[i].w = cx;
++        g_win[i].h = cy;
++    }
++#endif
+     cpu->EAX = 1;
+ }
+ void imp_user32__GetWindowLongA(CpuState *restrict cpu) {
+@@ -373,7 +449,16 @@
+     if (isaac_is_guest_va(r)) {
+         int32_t l = (int32_t)isaac_r32(r + 0), t = (int32_t)isaac_r32(r + 4);
+         int32_t rr = (int32_t)isaac_r32(r + 8), b = (int32_t)isaac_r32(r + 12);
+-        if (style & 0x00CF0000u) {      /* WS_CAPTION | WS_THICKFRAME ... */
++#ifdef ISAAC_NATIVE
++        /* Native: the window is the surface, it has no frame. With one the
++         * engine's 960x540 window became a 976x578 client (CreateWindowEx
++         * keeps the outer size), and the intro drew past the surface. */
++        (void)style;
++        if (0)
++#else
++        if (style & 0x00CF0000u)        /* WS_CAPTION | WS_THICKFRAME ... */
++#endif
++        {
+             l -= 8; t -= 30; rr += 8; b += 8;
+         }
+         isaac_w32(r + 0, (uint32_t)l); isaac_w32(r + 4, (uint32_t)t);

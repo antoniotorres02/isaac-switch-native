@@ -1,0 +1,39 @@
+--- a/scripts/recomp/host/src/host_gl_webgl.c
++++ b/scripts/recomp/host/src/host_gl_webgl.c
+@@ -695,6 +695,27 @@
+  * native_lua_state.c) is an exact synchronous read, and the footprint's ring
+  * is left as it was. */
+ int isaac_native_lua_running(void);
++/* The lag is right for the footprint only, and the engine reads pixels for
++ * one more thing: the floor colour under a burrowing enemy (Round Worm,
++ * Ulcer, Night Crawler...). 0x00823590 reads five points around the entity
++ * (from 0x008237af) and keeps their median, then makes a sixth read
++ * (0x0082399f) that comes back (0,0,0,a); 0x0064ca30 and others tint the
++ * anm2 "dirt"/"Hole" layers with twice that colour. Served lagged through the
++ * render thread, the five reads of a burst all got the same stale word, and
++ * when that was a sixth read the dirt was drawn black for the whole
++ * emergence. Only the footstep (Entity_Player 0x007b8cb0,
++ * two frames above the GL call: GetPixel 0x00a69760 <- 0x00a69700 <- caller)
++ * keeps the lag; every other 1x1 read is exact. */
++static int rp_footstep_read(const CpuState *cpu) {
++    uint32_t bp = cpu->EBP;                    /* GetPixel 0x00a69760's frame */
++    for (int k = 0; k < 2; ++k) {
++        if (!isaac_is_guest_va(bp) || !isaac_is_guest_va(bp + 7u)) return 0;
++        uint32_t ret = *(const uint32_t *)isaac_g(bp + 4u);
++        if (k == 1) return ret >= 0x007b8cb0u && ret < 0x007b98c0u;
++        bp = *(const uint32_t *)isaac_g(bp);
++    }
++    return 0;
++}
+ #endif
+ GLFN(glReadPixels) {
+     ENTER;
+@@ -703,7 +724,7 @@
+     uint8_t *dst = (uint8_t *)AP(6);
+     if (rp_mode() && A(2) == 1u && A(3) == 1u && A(4) == GL_RGBA && A(5) == GL_UNSIGNED_BYTE && dst) {
+ #ifdef ISAAC_NATIVE
+-        if (isaac_native_lua_running()) {
++        if (isaac_native_lua_running() || !rp_footstep_read(cpu)) {
+             glReadPixels((GLint)A(0), (GLint)A(1), 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, dst);
+             RET0;
+         }

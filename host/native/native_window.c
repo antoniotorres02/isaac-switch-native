@@ -68,7 +68,7 @@ int isaac_native_window_open(int w, int h) {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
     glfwWindowHint(GLFW_STENCIL_BITS, 8);
-    g_win = glfwCreateWindow(w, h, "Isaac (native, browsing lift)", NULL, NULL);
+    g_win = glfwCreateWindow(w, h, "ISAAC REPENTANCE+ NS1 RECOMP", NULL, NULL);
     if (!g_win) { glfwTerminate(); return 0; }
     glfwMakeContextCurrent(g_win);
     glfwSwapInterval(0);            /* paced by ISAAC_NATIVE_FPS: NVIDIA EGL blocks ~1 s per swap on a hidden window */

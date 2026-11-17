@@ -415,6 +415,7 @@ SYNC_HARNESS = r'''
 static const char *g_cloud_dir;
 static const char *g_fail_name;
 static int g_prompt_answer = -1;      /* -1: no prompt installed */
+static int g_keep_marker;
 static const char *g_unowned;         /* --unowned=: app ids Steam says no to */
 static int g_owns_fail_at = -1;       /* --owns-fail-at=: the question that gets no answer */
 static int g_owns_asked;
@@ -588,6 +589,7 @@ int main(int argc, char **argv)
         else if (!strncmp(argv[i], "--unowned=", 10)) { g_unowned = argv[i] + 10; check_owned = 1; }
         else if (!strncmp(argv[i], "--owns-fail-at=", 15)) { g_owns_fail_at = atoi(argv[i] + 15); check_owned = 1; }
         else if (!strcmp(argv[i], "--check-owned")) check_owned = 1;
+        else if (!strcmp(argv[i], "--keep-marker")) g_keep_marker = 1;
     }
 
     isaac_steam_transport t;
@@ -602,6 +604,7 @@ int main(int argc, char **argv)
     memset(&cfg, 0, sizeof cfg);
     cfg.save_dir = save_dir;
     cfg.prompt = g_prompt_answer >= 0;
+    cfg.keep_pull_marker = g_keep_marker;
     isaac_steamsync_set_log(on_log, NULL);
     isaac_steamsync_set_slot_fn(on_slot, NULL);
     if (cfg.prompt) isaac_steamsync_set_ask(on_ask, NULL);
@@ -719,10 +722,20 @@ def sync_engine_tests(run: Runner) -> None:
     out, rc = f.run_sync("pull", t0 + 40)
     run.check("pull: local change is left for push", rc == 0 and f.local(0).read_bytes() == b"played on switch")
     run.check("pull: reports the local change as an upload", slots(out).get(0) == UPLOAD, str(slots(out)))
+    # 3b. an upload from the in-game panel keeps the marker, so the session can push again
+    f.put(f.local(3), b"mid-session", t0 + 42)
+    out, rc = f.run_sync("push", t0 + 44, "--keep-marker")
+    run.check("push --keep-marker: uploads and keeps the marker",
+              rc == 0 and f.cloud_file(3).read_bytes() == b"mid-session"
+              and (f.saves / "steam-sync-pull.txt").exists(), out.strip().splitlines()[-2])
+    out, rc = f.run_sync("push", t0 + 46, "--keep-marker")
+    run.check("push --keep-marker: nothing changed, nothing uploaded",
+              rc == 0 and "0 uploaded" in out, out.strip().splitlines()[-2])
+    f.put(f.local(0), b"played on switch, later", t0 + 48)
     out, rc = f.run_sync("push", t0 + 50)
     uploads = [l for l in out.splitlines() if "uploaded" in l and "push done" not in l]
     run.check("push: uploads the changed slot only",
-              rc == 0 and f.cloud_file(0).read_bytes() == b"played on switch"
+              rc == 0 and f.cloud_file(0).read_bytes() == b"played on switch, later"
               and f.cloud_file(1).read_bytes() == b"cloud-1" and len(uploads) == 1,
               "%d upload(s)" % len(uploads))
     run.check("push: marker cleared", not (f.saves / "steam-sync-pull.txt").exists())

@@ -1,0 +1,22 @@
+--- a/scripts/recomp/lift/recomp_rt.c	2026-11-10 12:58:13.852611990 +0000
++++ b/scripts/recomp/lift/recomp_rt.c	2026-11-10 12:58:27.808222873 +0000
+@@ -152,8 +152,17 @@
+       ebx = 0x02100800u;                        /* clflush 8, 8 logical cpus */
+       ecx = (1u << 0)  | (1u << 9)  | (1u << 19)
+           | (1u << 20) | (1u << 23);            /* SSE3 SSSE3 SSE4.1 SSE4.2 POPCNT */
+-      edx = (1u << 15) | (1u << 23) | (1u << 24)
+-          | (1u << 25) | (1u << 26);            /* CMOV MMX FXSR SSE SSE2 */
++      /* No MMX (bit 23). The MMX CALLOTHERs below (pmulhw, paddsw, psraw,
++       * psllw, paddusb, psubusb, psubusw, packsswb) only compute the low 32
++       * bits of the 64-bit register; their only users are libtheora's MMX
++       * routines (0x00ae4630..0x00ae53b0: fragment copy/recon, iDCT, loop
++       * filter), picked by oc_cpu_flags_get (0x00ae4410) from this bit. With
++       * it set every decoded plane lost bytes 2-3 of each 4 and the Theora
++       * cutscenes came out as green stripes; without it libtheora takes its
++       * C paths. Nothing else in the image tests the bit (libyuv and the CRT
++       * read SSE2/SSSE3/SSE4.x). */
++      edx = (1u << 15) | (1u << 24)
++          | (1u << 25) | (1u << 26);            /* CMOV FXSR SSE SSE2 */
+       break;
+     case 0x80000000u:
+       eax = 0x80000008u;                        /* max extended leaf */

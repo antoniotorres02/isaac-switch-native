@@ -95,6 +95,30 @@ int isaac_launcher_set_font(const void *data, size_t size);
 /* Draws the whole screen. `stride` is in pixels. */
 void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view *view);
 
+/* The in-game Steam Cloud panel (opened with - and + together). */
+#define ISAAC_PANEL_W 640
+#define ISAAC_PANEL_H 320
+enum {
+    ISAAC_PANEL_READY,          /* A uploads */
+    ISAAC_PANEL_BUSY,           /* uploading */
+    ISAAC_PANEL_DONE,           /* the last upload worked */
+    ISAAC_PANEL_FAILED,         /* it did not: detail says why, A tries again */
+    ISAAC_PANEL_UNAVAILABLE,    /* no upload possible this session: detail says why */
+};
+typedef struct {
+    int state;
+    int auto_upload;            /* upload when the game closes */
+    char account[32];
+    char message[160];
+    char detail[192];
+    float t;
+} isaac_panel_view;
+
+/* Draws the panel into an ISAAC_PANEL_W x ISAAC_PANEL_H buffer (bytes R, G, B,
+ * A); what it does not cover is left transparent. Uses the font given to
+ * isaac_launcher_set_font. */
+void isaac_panel_draw(uint32_t *pixels, const isaac_panel_view *v);
+
 /* Frees the cached background, the glyphs and the face: the game gets the
  * memory back, and the font memory may go away after this. */
 void isaac_launcher_release(void);

@@ -392,9 +392,9 @@ def main() -> int:
 
     t0 = time.time()
     if switch:
-        exe = out / variant / "isaac-browsing.elf"
+        exe = out / variant / "isaac-repentance-ns1-recomp.elf"
         r = sh([args.cc] + prof["ld"] + args.ld_flags.split() + ["-specs=" + dkp + "/libnx/switch.specs",
-               "-Wl,-Map=" + str(out / variant / "isaac-browsing.map"), "-o", str(exe)]
+               "-Wl,-Map=" + str(out / variant / "isaac-repentance-ns1-recomp.map"), "-o", str(exe)]
                + [str(o) for o in objs]
                + ["-L", dkp + "/portlibs/switch/lib", "-L", dkp + "/libnx/lib",
                   "-lopenal", "-lSDL2", "-lEGL", "-lGLESv2", "-lglapi", "-ldrm_nouveau",
@@ -421,9 +421,9 @@ def main() -> int:
             sys.exit("missing %s: run the upstream ship.py build first" % index)
         shutil.copy2(index, romfs / "instance_index.json")
         shutil.copytree(HERE / "bench" / "isaac-bench", romfs / "isaac-bench")   # --bench
-        nacp = out / variant / "isaac-browsing.nacp"
-        nro = out / variant / "isaac-browsing.nro"
-        for cmd in ([dkp + "/tools/bin/nacptool", "--create", "Isaac (browsing lift)", "isaacport",
+        nacp = out / variant / "isaac-repentance-ns1-recomp.nacp"
+        nro = out / variant / "isaac-repentance-ns1-recomp.nro"
+        for cmd in ([dkp + "/tools/bin/nacptool", "--create", "ISAAC REPENTANCE+ NS1 RECOMP", "isaacport",
                      "0.1.0", str(nacp)],
                     [dkp + "/tools/bin/elf2nro", str(exe), str(nro), "--nacp=" + str(nacp),
                      "--romfsdir=" + str(romfs)]):

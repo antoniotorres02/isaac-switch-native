@@ -1,0 +1,95 @@
+--- a/scripts/recomp/host/src/host_gl_webgl.c	2026-11-10 12:46:17.192605630 +0000
++++ b/scripts/recomp/host/src/host_gl_webgl.c	2026-11-10 12:46:49.859710668 +0000
+@@ -367,6 +367,44 @@
+     isaac_lazy_tex_materialize(name, lazy_upload);
+     if (prev != name) glBindTexture(GL_TEXTURE_2D, prev);
+ }
++/* Theora cutscenes: theoraplayer's frame upload (0x00a62b10) writes every decoded
++ * frame with glTexSubImage2D(GL_RGB, GL_UNSIGNED_BYTE) into a texture the engine
++ * made GL_RGBA. Desktop GL converts; GLES 3 (and WebGL 2) refuse a format that
++ * differs from the level's (GL_INVALID_OPERATION), so every video stayed black
++ * while its Vorbis track played. Each 2D texture's level-0 format is remembered
++ * and RGB rows going into an RGBA level are widened (alpha 255, what desktop GL
++ * fills in). The unpack alignment is the default 4: the engine never changes it. */
++#define TEXFMT_NAMES 65536u
++static uint8_t g_texfmt[TEXFMT_NAMES];      /* 0 unknown or other, 3 GL_RGB, 4 GL_RGBA */
++static uint8_t *g_widen_buf;
++static size_t g_widen_cap;
++static uint32_t g_tex_widened;
++static void texfmt_note(uint32_t name, uint32_t ifmt, uint32_t format, uint32_t type) {
++    if (!name || name >= TEXFMT_NAMES) return;
++    g_texfmt[name] = type != GL_UNSIGNED_BYTE ? 0u :
++                     (ifmt == GL_RGBA && format == GL_RGBA) ? 4u : (ifmt == GL_RGB && format == GL_RGB) ? 3u : 0u;
++}
++/* RGB pixels for an RGBA level, widened into a scratch buffer; NULL to pass the
++ * call through unchanged */
++static const uint8_t *texfmt_widen(uint32_t name, uint32_t w, uint32_t h, const uint8_t *px) {
++    if (!px || !name || name >= TEXFMT_NAMES || g_texfmt[name] != 4u || !w || !h || w > 16384u || h > 16384u)
++        return NULL;
++    size_t need = (size_t)w * h * 4u;
++    if (need > g_widen_cap) {
++        uint8_t *n = realloc(g_widen_buf, need);
++        if (!n) return NULL;
++        g_widen_buf = n; g_widen_cap = need;
++    }
++    size_t src_row = ((size_t)w * 3u + 3u) & ~(size_t)3u;
++    for (uint32_t y = 0; y < h; ++y) {
++        const uint8_t *s = px + (size_t)y * src_row;
++        uint8_t *d = g_widen_buf + (size_t)y * w * 4u;
++        for (uint32_t x = 0; x < w; ++x, s += 3, d += 4) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = 0xFFu; }
++    }
++    if (++g_tex_widened == 1u)
++        isaac_log("[isaac][gl] texture %u: RGB %ux%u into its RGBA level, widened to RGBA (GLES refuses the mismatch)", name, w, h);
++    return g_widen_buf;
++}
+ 
+ /* ---- the entry points ------------------------------------------------------ */
+ /* ISAAC_GL_CHECK=1: glGetError after every forwarded call, naming it. */
+@@ -481,6 +519,7 @@
+     for (uint32_t i = 0; names && i < A(0); ++i) {
+         isaac_lazy_tex_drop(names[i]);
+         isaac_glc_tex_delete(names[i]);
++        if (names[i] < TEXFMT_NAMES) g_texfmt[names[i]] = 0;
+         for (unsigned u = 0; u < GLS_UNITS; ++u) {
+             if (gls_tex2d[u] == names[i] + 1u) gls_tex2d[u] = 0;
+             if (gls_texcube[u] == names[i] + 1u) gls_texcube[u] = 0;
+@@ -490,7 +529,7 @@
+     RET0;
+ }
+ GLFN(glDepthFunc)            { ENTER; glDepthFunc(A(0)); RET0; }
+-GLFN(glDisable)              { ENTER; glDisable(A(0)); RET0; }
++GLFN(glDisable)              { ENTER; if (A(0) == GL_TEXTURE_2D) RET0; glDisable(A(0)); RET0; }   /* fixed function: not a GLES capability */
+ GLFN(glDisableVertexAttribArray) {
+     ENTER;
+     isaac_gl_disable_vertex_attrib_array(A(0));
+@@ -513,7 +552,7 @@
+     isaac_gl_draw_elements(A(0), (GLsizei)A(1), A(2), A(3));
+     RET0;
+ }
+-GLFN(glEnable)               { ENTER; glEnable(A(0)); RET0; }
++GLFN(glEnable)               { ENTER; if (A(0) == GL_TEXTURE_2D) RET0; glEnable(A(0)); RET0; }    /* the video upload asks for it (GL_INVALID_ENUM) */
+ GLFN(glEnableVertexAttribArray) {
+     ENTER;
+     isaac_gl_enable_vertex_attrib_array(A(0));
+@@ -833,6 +872,7 @@
+     ++g_tex_uploads;
+     if (A(0) == GL_TEXTURE_2D) {
+         uint32_t name = tex2d_bound();
++        if (A(1) == 0u) texfmt_note(name, A(2), A(6), A(7));
+         /* round 97: a kept texture uploaded again: level 0 replaces what was kept,
+          * another level needs level 0 there first */
+         if (name && isaac_lazy_tex_pending(name)) {
+@@ -851,6 +891,13 @@
+     if (A(0) == GL_TEXTURE_2D) {                       /* round 97: written into: it needs its pixels first */
+         uint32_t name = tex2d_bound();
+         if (name && isaac_lazy_tex_materialize(name, lazy_upload)) ++g_lazy_at_write;
++        if (A(1) == 0u && A(6) == GL_RGB && A(7) == GL_UNSIGNED_BYTE) {
++            const uint8_t *wide = texfmt_widen(name, A(4), A(5), (const uint8_t *)AP(8));
++            if (wide) {
++                glTexSubImage2D(A(0), 0, (GLint)A(2), (GLint)A(3), (GLsizei)A(4), (GLsizei)A(5), GL_RGBA, GL_UNSIGNED_BYTE, wide);
++                RET0;
++            }
++        }
+     }
+     glTexSubImage2D(A(0), (GLint)A(1), (GLint)A(2), (GLint)A(3), (GLsizei)A(4), (GLsizei)A(5),
+                     A(6), A(7), AP(8));

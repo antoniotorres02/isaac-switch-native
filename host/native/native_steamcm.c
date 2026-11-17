@@ -447,7 +447,7 @@ static int http_request(const char *host, const char *method, const char *path,
                         int timeout_ms, char *err, size_t errcap) {
     isaac_tls t;
     if (tls_open(&t, host, 443, timeout_ms, err, errcap) != 0) return -1;
-    char req[2048];
+    static char req[16384];    /* one network user at a time; signed URLs run long */
     int n = snprintf(req, sizeof req, "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, host);
     if (n <= 0 || (size_t)n >= sizeof req) {
         tls_close(&t);
@@ -787,6 +787,69 @@ static void trim_name(const uint8_t *src, size_t len, char *out, size_t cap) {
     out[n] = 0;
 }
 
+/* The URL Steam hands out for a download or an upload: a host, a path with
+ * its signed query, and request headers that are part of the signature. A
+ * field cut short, or a header left out, makes the storage server refuse the
+ * request (HTTP 403) -- the first build kept 4 headers of 191 characters and
+ * a 1023-character path, silently. Nothing is cut now: what does not fit is
+ * an error that names it. One network user at a time, so one static copy. */
+#define URL_HEADERS 16
+typedef struct {
+    char host[256];
+    char path[4096];
+    char hdr[URL_HEADERS][1536];
+    const char *list[URL_HEADERS];
+    size_t nhdr;
+    char problem[96];
+} isaac_url_reply;
+static isaac_url_reply g_url;
+
+static void url_reset(void) {
+    g_url.host[0] = g_url.path[0] = 0;
+    g_url.nhdr = 0;
+    g_url.problem[0] = 0;
+}
+
+static void url_copy(const uint8_t *src, size_t len, char *out, size_t cap, const char *what) {
+    if (len >= cap) {
+        if (!g_url.problem[0]) snprintf(g_url.problem, sizeof g_url.problem, "%s is %zu bytes", what, len);
+        out[0] = 0;
+        return;
+    }
+    memcpy(out, src, len);
+    out[len] = 0;
+}
+
+/* A header message: field 1 its name, field 2 its value. */
+static void url_header(const uint8_t *bytes, size_t len) {
+    if (g_url.nhdr >= URL_HEADERS) {
+        if (!g_url.problem[0]) snprintf(g_url.problem, sizeof g_url.problem, "more than %d headers", URL_HEADERS);
+        return;
+    }
+    char name[128] = "", value[1400] = "";
+    isaac_pbr hr;
+    isaac_pbfield hf;
+    isaac_pbr_init(&hr, bytes, len);
+    while (isaac_pbr_next(&hr, &hf) == 1) {
+        if (hf.field == 1 && hf.wire == 2) url_copy(hf.bytes, hf.len, name, sizeof name, "a header name");
+        else if (hf.field == 2 && hf.wire == 2) url_copy(hf.bytes, hf.len, value, sizeof value, "a header value");
+    }
+    if (!name[0]) return;
+    snprintf(g_url.hdr[g_url.nhdr], sizeof g_url.hdr[0], "%s: %s", name, value);
+    g_url.list[g_url.nhdr] = g_url.hdr[g_url.nhdr];
+    ++g_url.nhdr;
+}
+
+/* For a refused request: what was sent, without the signature itself. */
+static void url_describe(const char *what) {
+    say("%s: host %s, path %zu bytes, %zu header(s)", what, g_url.host, strlen(g_url.path), g_url.nhdr);
+    for (size_t i = 0; i < g_url.nhdr; ++i) {
+        const char *colon = strchr(g_url.hdr[i], ':');
+        int nlen = colon ? (int)(colon - g_url.hdr[i]) : (int)strlen(g_url.hdr[i]);
+        say("%s:   %.*s (%zu bytes)", what, nlen, g_url.hdr[i], colon ? strlen(colon + 2) : (size_t)0);
+    }
+}
+
 static int cloud_enumerate(void *state, uint32_t appid, isaac_cloud_file *out, size_t max,
                            size_t *count, char *err, size_t errcap) {
     (void)state;
@@ -847,12 +910,10 @@ static int cloud_download(void *state, uint32_t appid, const char *name, void *r
         set_err(err, errcap, "ClientFileDownload: eresult %d", rc);
         return -1;
     }
-    char host[128] = "", path[1024] = "";
     uint8_t want[ISAAC_SHA1_DIGEST];
     int have_sha = 0;
     uint32_t raw_size = 0;
-    char hdrs[4][256];
-    size_t nhdrs = 0;
+    url_reset();
     isaac_pbr r;
     isaac_pbfield f;
     isaac_pbr_init(&r, g_reply_buf, g_cm.reply_len);
@@ -866,35 +927,26 @@ static int cloud_download(void *state, uint32_t appid, const char *name, void *r
             }
             break;
         case 5: if (timestamp) *timestamp = f.value; break;
-        case 7: if (f.wire == 2) trim_name(f.bytes, f.len, host, sizeof host); break;
-        case 8: if (f.wire == 2) trim_name(f.bytes, f.len, path, sizeof path); break;
-        case 10: {
-            if (f.wire != 2 || nhdrs >= 4) break;
-            char hn[64] = "", hv[192] = "";
-            isaac_pbr hr;
-            isaac_pbfield hf;
-            isaac_pbr_init(&hr, f.bytes, f.len);
-            while (isaac_pbr_next(&hr, &hf) == 1) {
-                if (hf.field == 1 && hf.wire == 2) trim_name(hf.bytes, hf.len, hn, sizeof hn);
-                else if (hf.field == 2 && hf.wire == 2) trim_name(hf.bytes, hf.len, hv, sizeof hv);
-            }
-            if (hn[0]) snprintf(hdrs[nhdrs++], sizeof hdrs[0], "%s: %s", hn, hv);
-            break;
-        }
+        case 7: if (f.wire == 2) url_copy(f.bytes, f.len, g_url.host, sizeof g_url.host, "the host"); break;
+        case 8: if (f.wire == 2) url_copy(f.bytes, f.len, g_url.path, sizeof g_url.path, "the path"); break;
+        case 10: if (f.wire == 2) url_header(f.bytes, f.len); break;
         default: break;
         }
     }
-    if (!host[0] || !path[0]) {
+    if (g_url.problem[0]) {
+        set_err(err, errcap, "download: the URL does not fit (%s)", g_url.problem);
+        return -1;
+    }
+    if (!g_url.host[0] || !g_url.path[0]) {
         set_err(err, errcap, "download: no URL");
         return -1;
     }
-    const char *list[4];
-    for (size_t i = 0; i < nhdrs; ++i) list[i] = hdrs[i];
     isaac_http http;
-    if (http_request(host, "GET", path, list, nhdrs, NULL, 0, g_zip_buf, sizeof g_zip_buf,
+    if (http_request(g_url.host, "GET", g_url.path, g_url.list, g_url.nhdr, NULL, 0, g_zip_buf, sizeof g_zip_buf,
                      &http, 30000, err, errcap) != 0)
         return -1;
     if (http.status != 200) {
+        url_describe(name);
         set_err(err, errcap, "download: HTTP %d", http.status);
         return -1;
     }
@@ -982,40 +1034,29 @@ static int cloud_upload_once(uint32_t appid, const char *name, const void *raw, 
         set_err(err, errcap, "BeginHTTPUpload: eresult %d", rc);
         return -1;
     }
-    char host[128] = "", path[1024] = "";
-    char hdrs[4][256];
-    size_t nhdrs = 0;
+    url_reset();
     isaac_pbr r;
     isaac_pbfield f;
     isaac_pbr_init(&r, g_reply_buf, g_cm.reply_len);
     while (isaac_pbr_next(&r, &f) == 1) {
         switch (f.field) {
-        case 3: if (f.wire == 2) trim_name(f.bytes, f.len, host, sizeof host); break;
-        case 4: if (f.wire == 2) trim_name(f.bytes, f.len, path, sizeof path); break;
-        case 6: {
-            if (f.wire != 2 || nhdrs >= 4) break;
-            char hn[64] = "", hv[192] = "";
-            isaac_pbr hr;
-            isaac_pbfield hf;
-            isaac_pbr_init(&hr, f.bytes, f.len);
-            while (isaac_pbr_next(&hr, &hf) == 1) {
-                if (hf.field == 1 && hf.wire == 2) trim_name(hf.bytes, hf.len, hn, sizeof hn);
-                else if (hf.field == 2 && hf.wire == 2) trim_name(hf.bytes, hf.len, hv, sizeof hv);
-            }
-            if (hn[0]) snprintf(hdrs[nhdrs++], sizeof hdrs[0], "%s: %s", hn, hv);
-            break;
-        }
+        case 3: if (f.wire == 2) url_copy(f.bytes, f.len, g_url.host, sizeof g_url.host, "the host"); break;
+        case 4: if (f.wire == 2) url_copy(f.bytes, f.len, g_url.path, sizeof g_url.path, "the path"); break;
+        case 6: if (f.wire == 2) url_header(f.bytes, f.len); break;
         default: break;
         }
     }
-    if (!host[0] || !path[0]) {
+    if (g_url.problem[0]) {
+        set_err(err, errcap, "upload: the URL does not fit (%s)", g_url.problem);
+        cloud_upload_abort(appid, name, hex);
+        return -1;
+    }
+    if (!g_url.host[0] || !g_url.path[0]) {
         set_err(err, errcap, "upload: no URL");
         return -1;
     }
-    const char *list[4];
-    for (size_t i = 0; i < nhdrs; ++i) list[i] = hdrs[i];
     isaac_http http;
-    if (http_request(host, "PUT", path, list, nhdrs, raw, raw_len, g_reply_buf, REPLY_MAX,
+    if (http_request(g_url.host, "PUT", g_url.path, g_url.list, g_url.nhdr, raw, raw_len, g_reply_buf, REPLY_MAX,
                      &http, 60000, err, errcap) != 0) {
         cloud_upload_abort(appid, name, hex);
         *retry = 1;
@@ -1023,6 +1064,7 @@ static int cloud_upload_once(uint32_t appid, const char *name, const void *raw, 
     }
     if (http.status != 200 && http.status != 201) {
         say_http_body(name, &http);
+        url_describe(name);
         set_err(err, errcap, "upload: HTTP %d", http.status);
         cloud_upload_abort(appid, name, hex);
         *retry = 1;

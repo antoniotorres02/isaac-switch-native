@@ -286,6 +286,10 @@ static atomic_uint g_slot_late;  /* slots that came after their vblank */
 #endif
 typedef struct { uint32_t tick; int draw; } slot_args;
 
+#ifdef __SWITCH__
+static void apply_view_crop(void);
+static void ov_draw(void);
+#endif
 static void present(const slot_args *a) {
 #ifdef __SWITCH__
     if (g_slot_paced) {
@@ -298,6 +302,10 @@ static void present(const slot_args *a) {
         g_slot_last = slot;
         if (!a->draw) return;
     }
+#endif
+#ifdef __SWITCH__
+    apply_view_crop();
+    ov_draw();
 #endif
     uint64_t t0 = isaac_native_now_ns();
     eglSwapBuffers(g_dpy, g_surf);
@@ -503,10 +511,236 @@ static int open_context(void) {
     return 1;
 }
 
+/* The part of the surface the engine draws into: its window's client size,
+ * from the bottom-left corner (patch 0008). Smaller than the surface only in
+ * the zoomed full screen; screenshots read back this much. */
+void isaac_native_view_size(int *w, int *h);
 void isaac_native_drawable_size(int *w, int *h) {
-    *w = SURFACE_W;
-    *h = SURFACE_H;
+    isaac_native_view_size(w, h);
+    if (*w <= 0 || *w > SURFACE_W) *w = SURFACE_W;
+    if (*h <= 0 || *h > SURFACE_H) *h = SURFACE_H;
 }
+
+#ifdef __SWITCH__
+/* The compositor shows only that part, scaled to the screen: a crop on the
+ * queued buffer, set before the swap that presents it. GL draws the view
+ * from the bottom-left corner and the buffer is stored top row first, so
+ * the view is the bottom rows; ISAAC_NATIVE_CROP_FLIP=1 takes the top ones
+ * instead. */
+static void apply_view_crop(void) {
+    static int last_w, last_h, flip = -1;
+    int w, h;
+    isaac_native_drawable_size(&w, &h);
+    if (w == last_w && h == last_h) return;
+    if (flip < 0) {
+        const char *e = getenv("ISAAC_NATIVE_CROP_FLIP");
+        flip = e && *e == '1';
+    }
+    int top = flip ? 0 : SURFACE_H - h;
+    nwindowSetCrop(nwindowGetDefault(), 0, top, w, top + h);
+    fprintf(stderr, "[native][gl] view %dx%d (crop %d,%d %dx%d)\n", w, h, 0, top, w, h);
+    last_w = w;
+    last_h = h;
+}
+
+/* ---- the in-game panel ------------------------------------------------------
+ * native_switch.c draws its Steam Cloud panel in software (RGBA, top row
+ * first) and hands it over here; the GL thread lays it over each frame just
+ * before the swap, over a dimmed game, the same size on screen whatever the
+ * zoom. Every piece of GL state it touches is read first and put back, since
+ * the host caches the game's state and skips calls it thinks are redundant. */
+static pthread_mutex_t g_ov_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t *g_ov_px;
+static int g_ov_w, g_ov_h, g_ov_on;
+static unsigned g_ov_version, g_ov_uploaded = ~0u;
+static GLuint g_ov_prog, g_ov_vao, g_ov_tex;
+static GLint g_ov_rect, g_ov_color, g_ov_solid;
+
+/* NULL hides the panel. Any thread. */
+void isaac_native_overlay_set(const uint32_t *px, int w, int h) {
+    pthread_mutex_lock(&g_ov_lock);
+    if (!px || w <= 0 || h <= 0) {
+        g_ov_on = 0;
+    } else {
+        if (w != g_ov_w || h != g_ov_h) {
+            free(g_ov_px);
+            g_ov_px = malloc((size_t)w * h * 4);
+            g_ov_w = g_ov_px ? w : 0;
+            g_ov_h = g_ov_px ? h : 0;
+        }
+        if (g_ov_px) {
+            memcpy(g_ov_px, px, (size_t)w * h * 4);
+            g_ov_on = 1;
+            ++g_ov_version;
+        }
+    }
+    pthread_mutex_unlock(&g_ov_lock);
+}
+
+static GLuint ov_shader(GLenum type, const char *src) {
+    GLuint s = glCreateShader(type);
+    glShaderSource(s, 1, &src, NULL);
+    glCompileShader(s);
+    GLint ok = 0;
+    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[512] = "";
+        glGetShaderInfoLog(s, sizeof log, NULL, log);
+        fprintf(stderr, "[native][gl] panel shader: %s\n", log);
+    }
+    return s;
+}
+
+static int ov_init(void) {
+    if (g_ov_prog) return 1;
+    static const char *vs =
+        "#version 300 es\n"
+        "uniform vec4 rect;\n"
+        "out vec2 uv;\n"
+        "void main() {\n"
+        "  vec2 q = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));\n"
+        "  uv = vec2(q.x, 1.0 - q.y);\n"
+        "  gl_Position = vec4(mix(rect.xy, rect.zw, q), 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "uniform sampler2D tex;\n"
+        "uniform vec4 color;\n"
+        "uniform int solid;\n"
+        "in vec2 uv;\n"
+        "out vec4 o;\n"
+        "void main() { o = solid == 1 ? color : texture(tex, uv); }\n";
+    GLuint p = glCreateProgram(), v = ov_shader(GL_VERTEX_SHADER, vs), f = ov_shader(GL_FRAGMENT_SHADER, fs);
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glLinkProgram(p);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        fprintf(stderr, "[native][gl] panel program did not link\n");
+        glDeleteProgram(p);
+        return 0;
+    }
+    g_ov_prog = p;
+    g_ov_rect = glGetUniformLocation(p, "rect");
+    g_ov_color = glGetUniformLocation(p, "color");
+    g_ov_solid = glGetUniformLocation(p, "solid");
+    glGenVertexArrays(1, &g_ov_vao);
+    glGenTextures(1, &g_ov_tex);
+    return 1;
+}
+
+static void ov_draw(void) {
+    pthread_mutex_lock(&g_ov_lock);
+    if (!g_ov_on) {
+        pthread_mutex_unlock(&g_ov_lock);
+        return;
+    }
+    /* what the game left bound */
+    GLint prog, vao, active, tex0, sampler0, fb, vp[4], align, row, ubuf;
+    GLint bsrc, bdst, bsrca, bdsta, beq, beqa;
+    GLboolean blend, scissor, depth, cull, stencil, mask[4];
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex0);
+    glGetIntegerv(GL_SAMPLER_BINDING, &sampler0);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
+    glGetIntegerv(GL_VIEWPORT, vp);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row);
+    glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &ubuf);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &bsrc);
+    glGetIntegerv(GL_BLEND_DST_RGB, &bdst);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &bsrca);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &bdsta);
+    glGetIntegerv(GL_BLEND_EQUATION_RGB, &beq);
+    glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &beqa);
+    glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+    blend = glIsEnabled(GL_BLEND);
+    scissor = glIsEnabled(GL_SCISSOR_TEST);
+    depth = glIsEnabled(GL_DEPTH_TEST);
+    cull = glIsEnabled(GL_CULL_FACE);
+    stencil = glIsEnabled(GL_STENCIL_TEST);
+
+    if (ov_init()) {
+        glBindTexture(GL_TEXTURE_2D, g_ov_tex);
+        glBindSampler(0, 0);
+        if (g_ov_uploaded != g_ov_version) {
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_ov_w, g_ov_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, g_ov_px);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            g_ov_uploaded = g_ov_version;
+        }
+        int w, h;
+        isaac_native_drawable_size(&w, &h);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glViewport(0, 0, w, h);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_STENCIL_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(g_ov_prog);
+        glBindVertexArray(g_ov_vao);
+        /* the game, dimmed */
+        glUniform1i(g_ov_solid, 1);
+        glUniform4f(g_ov_color, 0.0f, 0.0f, 0.0f, 0.55f);
+        glUniform4f(g_ov_rect, -1.0f, -1.0f, 1.0f, 1.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        /* the panel: its own pixel size on a 1280x720 screen, centred */
+        float hw = (float)g_ov_w / 1280.0f, hh = (float)g_ov_h / 720.0f;
+        glUniform1i(g_ov_solid, 0);
+        glUniform4f(g_ov_rect, -hw, -hh, hw, hh);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    pthread_mutex_unlock(&g_ov_lock);
+
+    glUseProgram((GLuint)prog);
+    glBindVertexArray((GLuint)vao);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)tex0);
+    glBindSampler(0, (GLuint)sampler0);
+    glActiveTexture((GLenum)active);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)fb);
+    glViewport(vp[0], vp[1], vp[2], vp[3]);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, align);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, row);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, (GLuint)ubuf);
+    glBlendFuncSeparate((GLenum)bsrc, (GLenum)bdst, (GLenum)bsrca, (GLenum)bdsta);
+    glBlendEquationSeparate((GLenum)beq, (GLenum)beqa);
+    glColorMask(mask[0], mask[1], mask[2], mask[3]);
+    if (blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    if (scissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    if (depth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (cull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+    if (stencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+}
+
+/* At shutdown, on the GL thread while the context is current. */
+static void ov_release(void) {
+    if (g_ov_prog) glDeleteProgram(g_ov_prog);
+    if (g_ov_vao) glDeleteVertexArrays(1, &g_ov_vao);
+    if (g_ov_tex) glDeleteTextures(1, &g_ov_tex);
+    g_ov_prog = g_ov_vao = g_ov_tex = 0;
+    pthread_mutex_lock(&g_ov_lock);
+    free(g_ov_px);
+    g_ov_px = NULL;
+    g_ov_w = g_ov_h = g_ov_on = 0;
+    pthread_mutex_unlock(&g_ov_lock);
+}
+#endif
 
 /* ---- screenshots ---------------------------------------------------------- */
 
@@ -595,6 +829,9 @@ void isaac_native_stage(const char *fmt, ...) __attribute__((weak));
  * session behind it) from ever returning on the Switch. */
 static void release_cmd(void *p) {
     (void)p;
+#ifdef __SWITCH__
+    ov_release();
+#endif
     eglMakeCurrent(g_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglReleaseThread();
 }

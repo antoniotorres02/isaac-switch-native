@@ -1,0 +1,8 @@
+# Only what the image needs. build/ holds the game's executable, its files and
+# everything made from them, and must never reach an image: so this lists what
+# goes in rather than what stays out.
+*
+!docker
+!host
+**/__pycache__
+host/builder
