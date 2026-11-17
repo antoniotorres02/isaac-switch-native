@@ -61,6 +61,10 @@ def test_vdf(tmp: Path) -> None:
     assert steam.parse_vdf('"a" { "b" ') == {"a": {}}, "a cut file does not raise"
 
 
+def vdf_str(path: Path) -> str:
+    return str(path).replace("\\", "\\\\")
+
+
 def test_find_game(tmp: Path) -> None:
     home = tmp / "home"
     assert steam.find_game(home, "linux") is None
@@ -69,7 +73,8 @@ def test_find_game(tmp: Path) -> None:
     other = tmp / "disk2" / "Steam Library"
     game = fake_library(other)
     (root / "steamapps/libraryfolders.vdf").write_text(
-        '"libraryfolders" { "0" { "path" "%s" } "1" { "path" "%s" } }' % (root, other))
+        # Steam escapes backslashes in its .vdf files, as Windows paths have them.
+        '"libraryfolders" { "0" { "path" "%s" } "1" { "path" "%s" } }' % (vdf_str(root), vdf_str(other)))
     found = steam.find_game(home, "linux")
     assert found and found.path == game, found
     assert found.buildid == "22878971" and found.missing_dlcs == []
