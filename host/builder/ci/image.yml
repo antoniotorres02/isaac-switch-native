@@ -15,7 +15,7 @@ jobs:
   image:
     runs-on: ubuntu-24.04
     steps:
-      # The image is about 7.4 GB; the runner starts with little more free than that.
+      # The image is about 1 GB now; freeing space is cheap insurance on a full runner.
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost

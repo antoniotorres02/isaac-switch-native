@@ -130,8 +130,8 @@ T: dict[str, tuple[str, str]] = {
     "docker.podman": ("Usando podman: funciona igual en teoría, pero sólo se ha probado con Docker.",
                       "Using podman: it should work the same, but only Docker has been tested."),
     "image.present": ("Imagen de herramientas lista ({ref})", "Tool image ready ({ref})"),
-    "image.absent": ("Falta la imagen de herramientas (~7,4 GB, una sola vez).",
-                     "The tool image is missing (~7.4 GB, once)."),
+    "image.absent": ("Falta la imagen de herramientas (~230 MB de descarga, una sola vez).",
+                     "The tool image is missing (~230 MB to download, once)."),
     "image.unpublished": ("La imagen todavía no está publicada. Se puede construir aquí mismo desde el "
                           "repositorio (unos minutos y varios GB de descarga).",
                           "The image is not published yet. It can be built right here from the repository "
