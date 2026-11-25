@@ -319,14 +319,19 @@ static void mod_state_set(const char *folder, int on) {
     printf("[native] mods menu: '%s' turned %s (applies at the next start)\n", folder, on ? "on" : "off");
 }
 
+/* ISAAC_NATIVE_MODS_DIR: where the mods are when they are not the
+ * instance's mods/ -- the installed title (NSP) keeps the game in its RomFS
+ * and the mods on the SD card. */
 static void seed_mods(void) {
-    DIR *d = opendir("mods");
-    if (!d) { printf("[native] ISAAC_NATIVE_MODS: no mods/ in the instance\n"); return; }
+    const char *root = getenv("ISAAC_NATIVE_MODS_DIR");
+    if (!root || !*root) root = "mods";
+    DIR *d = opendir(root);
+    if (!d) { printf("[native] ISAAC_NATIVE_MODS: no %s/\n", root); return; }
     struct dirent *e;
     while ((e = readdir(d))) {
         if (e->d_name[0] == '.') continue;
         char dir[1024], off[1100];
-        snprintf(dir, sizeof dir, "mods/%s", e->d_name);
+        snprintf(dir, sizeof dir, "%s/%s", root, e->d_name);
         struct stat st;
         if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
         snprintf(off, sizeof off, "%s/disable.it", dir);
@@ -412,7 +417,7 @@ static const char DEFAULT_OPTIONS[] =
     "AscentVoiceOver=1\r\nOnlineHud=0\r\nStreamerMode=0\r\nOnlinePlayerVolume=6\r\n"
     "OnlinePlayerOpacity=10\r\nOnlineChatEnabled=1\r\nOnlineChatFilterEnabled=1\r\n"
     "MultiplayerColorSet=0\r\nOnlineInputDelay=3\r\nItemInfoDisplayEnabled=0\r\n"
-    "AcceptedPublicBeta_v1.9.7.17=1\r\nAcceptedDataCollectionDisclaimer=1\r\n"
+    "AcceptedPublicBeta_v1.9.7.17=1\r\nAcceptedPublicBeta_v1.9.7.19=1\r\nAcceptedDataCollectionDisclaimer=1\r\n"
     "EnableDebugConsole=0\r\nMaxScale=99\r\nMaxRenderScale=2\r\nVSync=1\r\nPauseOnFocusLost=1\r\n"
     "SteamCloud=0\r\nMouseControl=0\r\nBossHpOnBottom=1\r\nAnnouncerVoiceMode=0\r\nConsoleFont=0\r\n"
     "FadedConsoleDisplay=0\r\nSaveCommandHistory=1\r\nWindowWidth=960\r\nWindowHeight=540\r\n"
@@ -554,6 +559,35 @@ static void force_fullscreen_option(void) {
     free(text);
 }
 
+/* The game asks once per version to accept its public-beta notice
+ * (options.ini AcceptedPublicBeta_<version>). A saved options.ini from an
+ * older build lacks the current version's line; accepted here as the
+ * defaults do, so an update does not stop at the notice. */
+static void accept_beta_notice(void) {
+    static const char line[] = "AcceptedPublicBeta_v1.9.7.19=";
+    char path[1300];
+    snprintf(path, sizeof path, "%s/%s", g_save_dir, store_rel(OPTIONS_KEY, NULL));
+    uint32_t n = 0;
+    uint8_t *old = read_file(path, &n);
+    if (!old) return;                     /* none saved: the defaults accept it */
+    int found = 0;
+    for (uint32_t i = 0; i + sizeof line - 1 <= n; ++i)
+        if ((i == 0 || old[i - 1] == '\n') && !memcmp(old + i, line, sizeof line - 1)) { found = 1; break; }
+    if (!found) {
+        char *text = malloc(n + sizeof line + 8);
+        if (text) {
+            memcpy(text, old, n);
+            uint32_t len = n + (uint32_t)sprintf(text + n, "%s%s1\r\n",
+                                                   n && old[n - 1] != '\n' ? "\r\n" : "", line);
+            isaac_fs_seed(OPTIONS_KEY, (const uint8_t *)text, len);
+            persist(OPTIONS_KEY, NULL, (const uint8_t *)text, len);
+            printf("[native] options.ini: %s1 added\n", line);
+            free(text);
+        }
+    }
+    free(old);
+}
+
 static uint8_t *read_file(const char *path, uint32_t *len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -653,6 +687,7 @@ int isaac_native_main(int argc, char **argv) {
         printf("[native] ISAAC_SAVE_DIR=%s: %u saved file(s) restored\n", g_save_dir, g_restored);
         const char *force = getenv("ISAAC_NATIVE_FULLSCREEN_ON");
         if (zoom && force && *force == '1') force_fullscreen_option();
+        accept_beta_notice();
     }
 
     /* The host's QueryPerformanceCounter is deterministic by default (100 ns

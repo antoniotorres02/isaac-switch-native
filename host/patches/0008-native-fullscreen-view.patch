@@ -7,7 +7,7 @@
 +#ifdef ISAAC_NATIVE
 +/* Native: the game's window (GLFW's "GLFW30" class) is the drawing surface,
 + * which has no frame and a fixed size (native_gl.c's SURFACE_W/H). The
-+ * engine takes its point scale from the window's client size (0x954320:
++ * engine takes its point scale from the window's client size (0x969a10:
 + * floor(min(h/240, w/400)), 480x270 points at 960x540), so the size it is
 + * given decides how much of the room fits on screen.
 + *

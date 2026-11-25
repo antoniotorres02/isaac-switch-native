@@ -2,8 +2,8 @@
 """Function entries the upstream lift misses: code pointers held as immediates.
 
 The game's Lua bindings store small getters as plain addresses (`push imm32`,
-`mov r/m32, imm32`) and call them indirectly, e.g. 0x0086fc60
-(`mov eax, [0x00c71678]; ret`, the Game getter). Ghidra never makes those
+`mov r/m32, imm32`) and call them indirectly, e.g. 0x00a03480
+(`mov eax, [0x00c994f8]; ret`, the Game getter). Ghidra never makes those
 functions, so the first mod that calls such an API traps with "indirect call
 ... resolves to neither a host shim nor a lifted function".
 

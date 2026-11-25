@@ -1,7 +1,8 @@
 # Native host for the the-browsing-of-isaac lift (PC and Nintendo Switch)
 
-This directory runs **The Binding of Isaac: Repentance+ PC v1.9.7.17**
-natively on x86-64 Linux and on the Nintendo Switch (libnx NRO). It reuses the
+This directory runs **The Binding of Isaac: Repentance+ for PC** (the version
+listed in [versions/](versions/README.md), today v1.9.7.19; the measurements below
+were taken on v1.9.7.17) natively on x86-64 Linux and on the Nintendo Switch (libnx NRO). It reuses the
 C code that [the-browsing-of-isaac](https://github.com/xreamm1/the-browsing-of-isaac)
 lifts from the Windows executable (Ghidra P-code → C) and replaces that
 project's WebAssembly/browser host with a native one: EGL + GLES3 for
@@ -32,7 +33,11 @@ buttons drawn on screen are the Switch ones.
 host/
   build_all.py                  the whole build in one command (what the Docker image runs)
   build_native.py               build driver (profiles debug, asan, release, gl, switch)
-  upstream.json                 pinned upstream commit, PE hashes and toolchain versions
+  upstream.json                 pinned upstream commit and toolchain versions
+  versions/, versions.py        the game versions the build knows: hashes, upstream overlay, function list
+  functions_data.py             Ghidra's function list stored per version (no Ghidra in a build)
+  upstream_steps.py             upstream's lift patches, stubs, dispatch and file index, without Emscripten
+  upstream-patches/             changes to upstream every version needs (bounded lift memory)
   extra_code_pointer_starts.py  the 519 function entries the upstream lift misses
   import_pc_saves.py            Steam profile -> native save store
   steam_cloud_cm.py             Steam CM protocol: token provisioning, cloud read/write

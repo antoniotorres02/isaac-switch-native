@@ -41,14 +41,15 @@ T: dict[str, tuple[str, str]] = {
                          "Expansions missing: {dlcs}. All of them are needed, up to Repentance+."),
     "game.dlc_ok": ("Expansiones instaladas: Afterbirth, Afterbirth+, Repentance y Repentance+",
                     "Expansions installed: Afterbirth, Afterbirth+, Repentance and Repentance+"),
-    "game.build_differs": ("Steam dice que tienes la build {got}; este port se hizo con la {want} (v1.9.7.17). "
-                           "Si Steam ha actualizado el juego, puede que no funcione.",
-                           "Steam says you have build {got}; this port was made with {want} (v1.9.7.17). "
-                           "If Steam has updated the game it may not work."),
-    "game.version_ok": ("Versión correcta: v1.9.7.17", "Right version: v1.9.7.17"),
-    "game.version_differs": ("El isaac-ng.exe de tu carpeta no es el de la v1.9.7.17: los ficheros del juego "
+    "game.build_differs": ("Steam dice que tienes la build {got}; este programa sabe construir la {want} "
+                           "(v{version}). Si Steam ha actualizado el juego, hace falta una versión nueva del "
+                           "programa.",
+                           "Steam says you have build {got}; this program can build {want} (v{version}). "
+                           "If Steam has updated the game, a newer version of this program is needed."),
+    "game.version_ok": ("Versión correcta: v{version}", "Right version: v{version}"),
+    "game.version_differs": ("El isaac-ng.exe de tu carpeta no es el de la v{version}: los ficheros del juego "
                              "pueden no coincidir.",
-                             "The isaac-ng.exe in your folder is not v1.9.7.17's: the game's files may not match."),
+                             "The isaac-ng.exe in your folder is not v{version}'s: the game's files may not match."),
 
     # ---- the executable --------------------------------------------------------------
     "exe.ok": ("Ejecutable correcto: {path}", "Right executable: {path}"),
@@ -56,9 +57,13 @@ T: dict[str, tuple[str, str]] = {
                      "pero el build necesita el ejecutable sin DRM (lee el aviso de arriba).",
                      "This is Steam's original isaac-ng.exe, still with DRM. It is the right version, "
                      "but the build needs the executable without DRM (read the notice above)."),
-    "exe.other": ("Este fichero no es el que hace falta.\nTiene SHA-256 {got}\ny hace falta {want}.\n"
+    "exe.retired": ("Este ejecutable es de la v{got}, que ya no se puede construir. Actualiza el juego en Steam "
+                    "(v{version}) y usa el ejecutable nuevo.",
+                    "This executable is from v{got}, which can no longer be built. Update the game in Steam "
+                    "(v{version}) and use the new executable."),
+    "exe.other": ("Este fichero no es el que hace falta.\nTiene SHA-256 {got}\ny hace falta {want} (v{version}).\n"
                   "Otra versión del juego, o un fichero que difiera en un solo byte, no sirve.",
-                  "This is not the file the build needs.\nIt has SHA-256 {got}\nand it must be {want}.\n"
+                  "This is not the file the build needs.\nIt has SHA-256 {got}\nand it must be {want} (v{version}).\n"
                   "Another game version, or a file that differs in a single byte, cannot work."),
     "exe.folder": ("{path} es una carpeta; elige el fichero .exe.", "{path} is a folder; choose the .exe file."),
     "exe.missing": ("Elige el ejecutable sin DRM.", "Choose the executable without DRM."),
@@ -147,13 +152,13 @@ T: dict[str, tuple[str, str]] = {
 
     # ---- stages (build_all.py's names) ---------------------------------------------------
     "stage.prepare": ("Preparar las fuentes", "Prepare the sources"),
-    "stage.ghidra": ("Analizar el ejecutable con Ghidra (la larga)", "Analyse the executable with Ghidra (the long one)"),
-    "stage.tables": ("Tablas, imagen de memoria y Lua", "Tables, memory image and Lua"),
+    "stage.functions": ("Listar las funciones del juego", "List the game's functions"),
+    "stage.tables": ("Tablas e imagen de memoria", "Tables and memory image"),
     "stage.starts": ("Buscar las funciones", "Find the functions"),
-    "stage.lift": ("Traducir el juego a C", "Translate the game to C"),
-    "stage.boot": ("Parchear el código traducido", "Patch the translated code"),
+    "stage.lift": ("Traducir el juego a C (la larga)", "Translate the game to C (the long one)"),
     "stage.assets": ("Indexar los ficheros del juego", "Index the game's files"),
     "stage.nro": ("Compilar el NRO", "Compile the NRO"),
+    "stage.nsp": ("Preparar la instalación (NSP)", "Prepare the install (NSP)"),
     "stage.sdcard": ("Preparar la carpeta de la SD", "Prepare the SD card folder"),
     "stage.export": ("Copiar el resultado a tu carpeta", "Copy the result to your folder"),
 
@@ -236,18 +241,22 @@ T: dict[str, tuple[str, str]] = {
                           "again, “Copy report” and ask for help with it."),
     "page.build.problems": ("El contenedor no puede empezar:", "The container cannot start:"),
     "page.result": ("6. ¡Hecho!", "6. Done!"),
-    "page.result.intro": ("El NRO y los ficheros del juego están en:", "The NRO and the game's files are in:"),
-    "page.result.hash": ("SHA-256 del NRO: {sha}", "NRO SHA-256: {sha}"),
+    "page.result.intro": ("El instalador y el juego están en:", "The installer and the game are in:"),
+    "page.result.hash": ("SHA-256 del NRO del juego: {sha}", "Game NRO SHA-256: {sha}"),
     "page.result.how": (
         "Copia el CONTENIDO de esa carpeta a la raíz de la SD (con un lector de tarjetas, o con el botón de abajo). "
-        "Tus partidas no se tocan.\n\nEn la consola, abre el menú homebrew en modo Aplicación (mantén R al abrir un "
-        "juego) y lanza ISAAC REPENTANCE+ NS1 RECOMP. PLAYING.md explica los controles y cómo pasar tus partidas.",
+        "Tus partidas no se tocan.\n\nEn la consola, abre el menú homebrew, lanza isaac-recomp-installer y pulsa A: "
+        "instala ISAAC REPENTANCE+ NS1 RECOMP en el menú HOME (hace falta Atmosphère con sigpatches). Al terminar "
+        "puedes borrar los ficheros de instalación con X. Los mods van en sdmc:/switch/isaac-recomp/mods/. "
+        "PLAYING.md explica los controles y cómo pasar tus partidas.",
         "Copy the CONTENTS of that folder to the root of the SD card (with a card reader, or with the button below). "
-        "Your saves are not touched.\n\nOn the console, open the homebrew menu in Application mode (hold R while "
-        "opening a game) and start ISAAC REPENTANCE+ NS1 RECOMP. PLAYING.md covers the controls and moving your saves."),
-    "page.result.share": ("No compartas el NRO ni esa carpeta: llevan la imagen del ejecutable y los ficheros del "
+        "Your saves are not touched.\n\nOn the console, open the homebrew menu, start isaac-recomp-installer and "
+        "press A: it installs ISAAC REPENTANCE+ NS1 RECOMP on the HOME menu (Atmosphère with sigpatches is needed). "
+        "When it is done, X deletes the install files. Mods go in sdmc:/switch/isaac-recomp/mods/. PLAYING.md covers "
+        "the controls and moving your saves."),
+    "page.result.share": ("No compartas el juego instalado ni esa carpeta: llevan la imagen del ejecutable y los ficheros del "
                           "juego. Cada persona tiene que construir el suyo.",
-                          "Do not share the NRO or that folder: they hold the executable's image and the game's "
+                          "Do not share the installed game or that folder: they hold the executable's image and the game's "
                           "files. Everyone has to build their own."),
     "page.result.sd": ("Tarjeta SD:", "SD card:"),
     "page.result.no_sd": ("No veo ninguna tarjeta. Métela y pulsa «Actualizar», o elige la carpeta a mano.",

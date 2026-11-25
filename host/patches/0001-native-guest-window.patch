@@ -222,7 +222,7 @@ index cf45029..2f288b9 100644
 +#endif
  static uint32_t g_rp_logged;
  /* Round 94: the game's one readback, made asynchronous. On a footstep frame
-  * (Entity_Player::IsFootstepFrame 0x007b9940, every 6 ticks, from 0x007b8cb0)
+  * (Entity_Player::IsFootstepFrame 0x007c24e0, every 6 ticks, from 0x007c1850)
 @@ -565,7 +588,17 @@ static uint32_t g_rp_logged;
   * ISAAC_READPIXELS_CHECK=1 also reads each pixel synchronously and logs the
   * pair, so the lag can be seen. */
@@ -392,7 +392,7 @@ index 1b252ad..d5f4f25 100644
 +}
 +#else
  LUA_SHIM(lua_getinfo) { cpu->EAX = (uint32_t)lua_getinfo(L_ARG(0), S_ARG(1), (lua_Debug *)P_ARG(2)); }
- /* Register-held only (0x00930b63, the debug-hook path): the call-site census
+ /* Register-held only (0x00945be3, the debug-hook path): the call-site census
   * saw 0 sites, so it had no binding and would have trapped. */
  LUA_SHIM(lua_getstack) { cpu->EAX = (uint32_t)lua_getstack(L_ARG(0), I_ARG(1), (lua_Debug *)P_ARG(2)); }
 +#endif
@@ -568,7 +568,7 @@ index 33f116a..98b6156 100644
  
 -#ifndef ISAAC_WEB   /* the fake, headless GL; host_gl_webgl.c is the web build's */
 +#ifndef ISAAC_REAL_GL   /* the fake, headless GL; host_gl_webgl.c is the web build's */
- /* void glClear(GLbitfield mask) -- cdecl. Called once at 0x00a6b9e1 with
+ /* void glClear(GLbitfield mask) -- cdecl. Called once at 0x00a8b6e1 with
   * 0x4000 (GL_COLOR_BUFFER_BIT); the return value is discarded. */
  void imp_opengl32__glClear(CpuState *restrict cpu) {
 @@ -954,7 +961,7 @@ void imp_opengl32__glViewport(CpuState *restrict cpu) {
@@ -578,7 +578,7 @@ index 33f116a..98b6156 100644
 -#endif /* !ISAAC_WEB */
 +#endif /* !ISAAC_REAL_GL */
  
- /* ================= TEMP instrumentation (remove after 0xa6b570 root cause) = */
+ /* ================= TEMP instrumentation (remove after 0xa8b270 root cause) = */
  void imp_kernel32__OutputDebugStringA(CpuState *restrict cpu) {
 diff --git a/scripts/recomp/host/src/host_shims_misc.c b/scripts/recomp/host/src/host_shims_misc.c
 index 7933f49..8339312 100644

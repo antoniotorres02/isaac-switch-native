@@ -1,11 +1,12 @@
 /* Nintendo Switch button glyphs, drawn from the game's own sheets.
  *
  * The PC game only knows the XboxOne/PS4/PS5 glyph sets (it picks one by
- * controller type, 0x0095afb8), but its buttons.anm2 and
+ * controller type, 0x00971728), but its buttons.anm2 and
  * controls_buttons.anm2 also carry Nicalis's Switch frames ("Switch",
- * "Switch_Pro") on the same sprite sheets. The .anm2 loader (sub_0040ed50)
- * hands each file's XML text to rapidxml; build_native.py's lift hook calls
- * isaac_hook_anm2_text at 0x40ee80, where the text pointer is at [ESP]. For
+ * "Switch_Pro") on the same sprite sheets. The .anm2 loader hands each
+ * file's XML text to rapidxml; build_native.py's lift hook calls
+ * isaac_hook_anm2_text at 0x410043 (0x40ee80 in 1.9.7.17), where the text
+ * pointer is at [ESP]. For
  * those two files the parser gets a copy whose XboxOne frames crop the Switch
  * glyphs instead; everything else in the file, and every other file, is left
  * alone. Nothing of the game's data is kept here: the copy is made from the

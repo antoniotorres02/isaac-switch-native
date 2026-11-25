@@ -6,6 +6,9 @@
  *   sdmc:/switch/isaac-recomp/guest/           the PC install (resources/...)
  *   sdmc:/switch/isaac-recomp/saves/           saves (saves-autotest/ for tests)
  *   sdmc:/switch/isaac-recomp/guest/mods/      mods, mounted when playing (--mods in tests)
+ * Installed as a title (installer/, an NSO instead of an NRO) the game's
+ * files are the title's own, romfs:/guest/, and the mods move to
+ *   sdmc:/switch/isaac-recomp/mods/
  *
  * Interactive: a launch screen first (the Steam Cloud pull and a Play button,
  * native_launcher.c; settings.ini launcher=0 skips it), then the game runs
@@ -63,6 +66,14 @@ void isaac_native_prof_config(int hz, int game_core);
 void isaac_native_prof_game_thread(void);
 
 #define ROOT "sdmc:/switch/isaac-recomp"
+
+/* Where the game's files are: the SD card for the NRO, the RomFS once
+ * installed as a title (installer/payload.py puts them in romfs:/guest). */
+static const char *g_guest = ROOT "/guest";
+static int g_installed;
+const char *isaac_switch_game_files_label(void) {
+    return g_installed ? "inside the installed title" : ROOT "/guest";
+}
 
 /* ---- pad -> XINPUT_STATE -------------------------------------------------- */
 
@@ -438,7 +449,7 @@ static void check_game_files(void) {
         return;
     }
     isaac_gamefiles f;
-    if (isaac_gamefiles_check("romfs:/instance_index.json", ROOT "/guest", &f) != 0) {
+    if (isaac_gamefiles_check("romfs:/instance_index.json", g_guest, &f) != 0) {
         stage("game files: this build's list could not be read, not checked");
         return;
     }
@@ -458,8 +469,9 @@ static void check_game_files(void) {
                           base ? base + 1 : f.bad[i]);
         }
         if (bad > shown) n += snprintf(g_ln.files_detail + n, sizeof g_ln.files_detail - n, " and %d more", bad - shown);
-        snprintf(g_ln.files_detail + n, sizeof g_ln.files_detail - n,
-                 ". Copy them from your PC install to sdmc:/switch/isaac-recomp/guest.");
+        snprintf(g_ln.files_detail + n, sizeof g_ln.files_detail - n, "%s",
+                 g_installed ? ". Install the game again with the installer."
+                             : ". Copy them from your PC install to sdmc:/switch/isaac-recomp/guest.");
     } else {
         g_ln.files = ISAAC_FILES_OK;
         snprintf(g_ln.files_summary, sizeof g_ln.files_summary, "%d of %d found", f.total, f.total);
@@ -1449,7 +1461,8 @@ static void *game_thread(void *p) {
 }
 
 static int run_game(void) {
-    static char *argv[] = { "isaac", "romfs:/isaac.segs.bin", ROOT "/guest", "main", NULL };
+    static char *argv[] = { "isaac", "romfs:/isaac.segs.bin", NULL, "main", NULL };
+    argv[2] = (char *)g_guest;
     game_args a = { 4, argv, -1 };
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -1576,6 +1589,14 @@ int main(int argc, char **argv) {
         fputs("[switch] RomFS did not mount\n", stderr);
     } else {
         mkdir(ROOT, 0777);
+        g_installed = envIsNso();
+        if (g_installed) {
+            g_guest = "romfs:/guest";
+            mkdir(ROOT "/mods", 0777);
+            setenv("ISAAC_NATIVE_MODS_DIR", ROOT "/mods", 1);
+        }
+        stage("layout: %s", g_installed ? "installed title (game files in RomFS, mods in " ROOT "/mods)"
+                                        : "NRO (game files in " ROOT "/guest)");
         setenv("ISAAC_NATIVE_INSTANCE_LIST", "romfs:/instance_index.json", 1);
         static char input[8192], max_frames[16], shots[64], shot_dir[128];
         if (automatic) {

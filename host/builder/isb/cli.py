@@ -111,7 +111,7 @@ def cmd_build(args) -> int:
         say(t("image.failed"))
         return 2
     plan = make_plan(args, st, ref, game)
-    progress = Progress(export=plan.export is not None)
+    progress = Progress(export=plan.export is not None, nsp=plan.fmt == "nsp")
     last = {"line": ""}
 
     def on_event(event):
@@ -169,12 +169,12 @@ def make_plan(args, st: dockerctl.Status, ref: str, game) -> dockerctl.Plan:
     return dockerctl.Plan(engine=st.engine, exe_path=st.exe, image=ref, game_exe=Path(args.exe).resolve(),
                           game=game.path.resolve(), work=system.work_folder(args.folder),
                           export=system.export_folder(args.folder), steam=args.steam,
-                          threads=args.threads, jobs=args.jobs)
+                          fmt=args.format, threads=args.threads, jobs=args.jobs)
 
 
 def cmd_copy(args) -> int:
     src = system.result_folder(args.folder)
-    if not (src / sdcard.NRO).is_file():
+    if not sdcard.has_result(src):
         say(t("cli.no_sd_source", path=src))
         return 2
     dest = args.dest
@@ -243,6 +243,8 @@ def parser() -> argparse.ArgumentParser:
     b = sub.add_parser("build", help="check, then build; run it again to resume")
     common(b)
     b.add_argument("--steam", action="store_true", help="include Steam Cloud sync (read STEAM-CLOUD.md first)")
+    b.add_argument("--format", choices=("nsp", "nro"), default="nsp",
+                   help="nsp: an installer that puts the game on the HOME menu (default); nro: the homebrew NRO")
     b.add_argument("--threads", type=int)
     b.add_argument("--jobs", type=int)
     b.add_argument("-v", "--verbose", action="store_true", help="show the build's log lines")

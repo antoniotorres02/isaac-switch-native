@@ -181,6 +181,7 @@ class Plan:
     work: Path | None        # a folder (Linux); None means the VOLUME (Windows)
     export: Path | None      # where the SD card folder is copied, when work is the volume
     steam: bool = False
+    fmt: str = "nsp"         # build_all.py --format: nsp (installer + payload) or nro
     threads: int | None = None
     jobs: int | None = None
     check_only: bool = False
@@ -221,6 +222,8 @@ def build_command(plan: Plan, platform: str | None = None, uid: tuple[int, int] 
         cmd += ["--export", "/export"]
     if plan.steam:
         cmd += ["--steam"]
+    if plan.fmt != "nsp":
+        cmd += ["--format", plan.fmt]
     if plan.threads:
         cmd += ["--threads", str(plan.threads)]
     if plan.jobs:

@@ -8,6 +8,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 NRO = "switch/isaac-repentance-ns1-recomp.nro"
+INSTALLER = "switch/isaac-recomp-installer.nro"
+PAYLOAD = "switch/isaac-recomp/install/"
+
+
+def has_result(src: Path) -> bool:
+    """A finished build: the NRO (--format nro) or the installer and its payload."""
+    return (src / NRO).is_file() or ((src / INSTALLER).is_file() and (src / PAYLOAD / "install.txt").is_file())
+
+
+def always_copied(rel: str) -> bool:
+    """What a rebuild changes without changing its size: the programs and the payload."""
+    return rel in (NRO, INSTALLER) or rel.startswith(PAYLOAD)
 
 
 @dataclass
@@ -68,7 +80,7 @@ def looks_like_switch_card(root: Path) -> bool:
 
 def plan_copy(src: Path, dest: Path) -> list[tuple[Path, Path, int]]:
     """(source, target, size) for what has to be copied. A game file already on
-    the card with the same size is left alone; the NRO is always copied."""
+    the card with the same size is left alone; the NROs and the payload are always copied."""
     todo = []
     for path in sorted(src.rglob("*")):
         if not path.is_file():
@@ -76,7 +88,7 @@ def plan_copy(src: Path, dest: Path) -> list[tuple[Path, Path, int]]:
         rel = path.relative_to(src)
         target = dest / rel
         size = path.stat().st_size
-        if rel.as_posix() != NRO and target.is_file() and target.stat().st_size == size:
+        if not always_copied(rel.as_posix()) and target.is_file() and target.stat().st_size == size:
             continue
         todo.append((path, target, size))
     return todo

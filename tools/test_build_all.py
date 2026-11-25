@@ -28,19 +28,102 @@ def fake_game(root: Path) -> Path:
     return root
 
 
+def fake_versions(root: Path, entries) -> Path:
+    """A versions/ folder: (name, supported, pe bytes, steam exe bytes, buildid) each."""
+    for name, supported, pe, steam_exe, buildid in entries:
+        (root / name).mkdir(parents=True)
+        (root / name / "version.json").write_text(json.dumps({
+            "version": name, "supported": supported,
+            "steam": {"buildid": buildid, "exe_sha256": hashlib.sha256(steam_exe).hexdigest().upper()},
+            "pe": {"sha256": hashlib.sha256(pe).hexdigest().upper(), "size": len(pe)}}))
+    return root
+
+
 def test_exe(tmp: Path) -> None:
-    exe = tmp / "game.exe"
-    exe.write_bytes(b"the right bytes")
-    right = hashlib.sha256(b"the right bytes").hexdigest()
-    assert build_all.check_exe(exe, right) == []
-    assert build_all.check_exe(exe, right.upper()) == [], "the hash in upstream.json is uppercase"
-    wrong = build_all.check_exe(exe, "0" * 64)
-    assert len(wrong) == 1 and right in wrong[0] and "GUIDE.md" in wrong[0], wrong
-    assert "not found" in build_all.check_exe(tmp / "absent.exe", right)[0]
+    reg = fake_versions(tmp / "versions", [("1.0.0.1", False, b"old pe", b"old drm", "10"),
+                                           ("1.0.0.2", True, b"the right bytes", b"new drm", "20")])
+    def ident(name, data=None):
+        path = tmp / name
+        if data is not None:
+            path.write_bytes(data)
+        return build_all.identify_exe(path, reg)
+    problems, v = ident("game.exe", b"the right bytes")
+    assert problems == [] and v.name == "1.0.0.2", (problems, v)
+    problems, v = ident("old.exe", b"old pe")
+    assert v is None and "v1.0.0.1" in problems[0] and "no longer supports" in problems[0], problems
+    problems, v = ident("drm.exe", b"new drm")
+    assert v is None and "DRM" in problems[0] and "v1.0.0.2" in problems[0], problems
+    problems, v = ident("other.exe", b"something else")
+    got = hashlib.sha256(b"something else").hexdigest()
+    assert v is None and got in problems[0] and "v1.0.0.2 (Steam build 20)" in problems[0], problems
+    assert "not found" in ident("absent.exe")[0][0]
     # docker run makes an empty folder when the path it should mount is absent
-    folder = tmp / "folder.exe"
-    folder.mkdir()
-    assert "is a folder" in build_all.check_exe(folder, right)[0]
+    (tmp / "folder.exe").mkdir()
+    assert "is a folder" in ident("folder.exe")[0][0]
+
+
+def test_shipped_versions(tmp: Path) -> None:
+    """The versions/ in the repository: one supported version, whose files are what version.json says."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    import functions_data
+    import versions
+    supported = versions.supported()
+    assert len(supported) == 1, supported
+    v = supported[0]
+    assert v.overlay and v.overlay.is_file() and v.overlay.stat().st_size < 1 << 20
+    overlay = v.overlay.read_text(encoding="utf-8")
+    targets = [line[6:] for line in overlay.splitlines() if line.startswith("+++ b/")]
+    assert targets and all(t.startswith("scripts/") and "/generated/" not in t for t in targets), targets
+    assert 'EXPECTED_SHA256 = "%s"' % v.pe_sha256.upper() in overlay, "the overlay must expect this exe"
+    common = sorted((SCRIPT.parent / "upstream-patches").glob("*.patch"))
+    touched = {line[6:] for f in common for line in f.read_text(encoding="utf-8").splitlines()
+               if line.startswith("+++ b/")}
+    assert touched and all(t.startswith("scripts/") for t in touched), touched
+    assert not touched & set(targets), "a common patch and the overlay must not touch the same file"
+    rows = functions_data.load(v.folder)          # checks count and digest
+    assert rows == sorted(rows, key=lambda r: r.va) and len({r.va for r in rows}) == len(rows)
+    for old in versions.load():
+        if old.name != v.name:
+            assert not old.supported and old.pe_sha256 != v.pe_sha256
+
+
+def test_functions_data(tmp: Path) -> None:
+    sys.path.insert(0, str(SCRIPT.parent))
+    import functions_data as fd
+    export = tmp / "ghidra"
+    export.mkdir()
+    rows = [dict(va=0x401000, minVa=0x401000, endVa=0x401020, inText=True, external=False, name="a"),
+            dict(va=0x401030, minVa=0x401028, endVa=0x401100, inText=True, external=False, name="b"),
+            dict(va=0x401200, minVa=0x401200, endVa=0x401201, inText=True, external=False, name="c")]
+    with open(export / "functions.raw.jsonl", "w") as f:
+        for r in rows:
+            f.write(json.dumps({k: ("0x%08x" % v if isinstance(v, int) and not isinstance(v, bool) else v)
+                                for k, v in r.items()}) + "\n")
+    (export / "recovered-functions.tsv").write_text(
+        "round\tva\trunBytes\tbodyBytes\tfirstInsn\tlooksLikePrologue\n"
+        "1\t0x00401030\t9\t9\tPUSH EBP\ttrue\n1\t0x00401200\t1\t1\tRET\tfalse\n")
+    vdir = tmp / "v"
+    vdir.mkdir()
+    assert fd.main(["make", str(export), str(vdir)]) == 0
+    assert fd.main(["check", str(vdir), str(export)]) == 0
+    out = tmp / "out"
+    assert fd.main(["write", str(vdir), str(out)]) == 0
+    written = [json.loads(line) for line in (out / "functions.jsonl").read_text().splitlines()]
+    assert written[1] == {"va": "0x00401030", "minVa": "0x00401028", "endVa": "0x00401100", "inText": True,
+                          "external": False, "recovered": True}, written[1]
+    assert [w["recovered"] for w in written] == [False, True, True]
+    assert (out / "recovered-functions.tsv").read_text() == \
+        "va\tlooksLikePrologue\n0x00401030\ttrue\n0x00401200\tfalse\n"
+    # a list that no longer matches its version.json is refused
+    text = (vdir / "functions.txt").read_text()
+    assert "\n401000 20\n" in text, text
+    (vdir / "functions.txt").write_text(text.replace("\n401000 20\n", "\n401000 21\n"))
+    try:
+        fd.load(vdir)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("a changed functions.txt must not load")
 
 
 def test_game(tmp: Path) -> None:
@@ -60,7 +143,7 @@ def test_work(tmp: Path) -> None:
     assert build_all.check_work(work, 1, 16 * GIB) == []
     assert work.is_dir() and not list(work.iterdir()), "the write test leaves nothing behind"
     assert "Not enough disk" in build_all.check_work(work, 1 << 60, 16 * GIB)[0]
-    assert "Not enough memory" in build_all.check_work(work, 1, 4 * GIB)[0]
+    assert "Not enough memory" in build_all.check_work(work, 1, 3 * GIB)[0]
     assert build_all.check_work(work, 1, None) == [], "unknown memory is not a reason to refuse"
     if os.getuid() != 0:
         locked = tmp / "locked"
@@ -291,7 +374,7 @@ def test_main_json_problems(tmp: Path) -> None:
 
 
 def main() -> int:
-    for test in (test_exe, test_game, test_work, test_resume, test_produces, test_unexpected_error, test_sigterm, test_sh, test_sd_card, test_main_refuses_quickly,
+    for test in (test_exe, test_shipped_versions, test_functions_data, test_game, test_work, test_resume, test_produces, test_unexpected_error, test_sigterm, test_sh, test_sd_card, test_main_refuses_quickly,
                  test_json_events, test_json_log_lines, test_export, test_main_json_problems):
         with tempfile.TemporaryDirectory() as d:
             test(Path(d))

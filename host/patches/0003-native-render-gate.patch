@@ -42,13 +42,13 @@
 +int isaac_render_gate(void) {
 +    int mode = native_gate_mode();
 +    if (!mode) return 0;
-+    uint32_t game = isaac_r32(0x00c71678u);
-+    int have = game && isaac_is_guest_va(game + 0x264fbu);
++    uint32_t game = isaac_r32(0x00c994f8u);
++    int have = game && isaac_is_guest_va(game + 0x2650bu);
 +    double now = emscripten_get_now();
 +    int paced = native_paced();
 +    if (paced) isaac_native_pace_render();
 +    uint32_t decided = g_rg_drawn + g_rg_skipped;
-+    int skip = isaac_render_gate_decide(now, have, have ? isaac_r32(game + 0x264f8u) : 0u);
++    int skip = isaac_render_gate_decide(now, have, have ? isaac_r32(game + 0x26508u) : 0u);
 +    if (paced && mode == 1 && g_rg_drawn + g_rg_skipped != decided) {   /* the pass after a tick */
 +        int want = isaac_native_pace_decide(skip);
 +        if (want && !skip) { --g_rg_drawn; ++g_rg_skipped; g_rg_cls = 2; g_rg_draw_at = 0.0; }

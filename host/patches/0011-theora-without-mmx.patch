@@ -9,8 +9,8 @@
 +      /* No MMX (bit 23). The MMX CALLOTHERs below (pmulhw, paddsw, psraw,
 +       * psllw, paddusb, psubusb, psubusw, packsswb) only compute the low 32
 +       * bits of the 64-bit register; their only users are libtheora's MMX
-+       * routines (0x00ae4630..0x00ae53b0: fragment copy/recon, iDCT, loop
-+       * filter), picked by oc_cpu_flags_get (0x00ae4410) from this bit. With
++       * routines (0x00b04e80..0x00b05c00: fragment copy/recon, iDCT, loop
++       * filter), picked by oc_cpu_flags_get (0x00b04c60) from this bit. With
 +       * it set every decoded plane lost bytes 2-3 of each 4 and the Theora
 +       * cutscenes came out as green stripes; without it libtheora takes its
 +       * C paths. Nothing else in the image tests the bit (libyuv and the CRT

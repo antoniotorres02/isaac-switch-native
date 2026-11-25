@@ -6,3 +6,4 @@
 !host
 **/__pycache__
 host/builder
+host/rebase

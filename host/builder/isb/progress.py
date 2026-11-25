@@ -5,16 +5,16 @@ from __future__ import annotations
 import time
 
 # Seconds each stage took on the 16-thread machine GUIDE.md was measured on.
-EXPECTED = {"prepare": 5, "ghidra": 1500, "tables": 175, "starts": 21, "lift": 100, "boot": 433,
-            "assets": 233, "nro": 240, "sdcard": 5}
+EXPECTED = {"prepare": 5, "functions": 2, "tables": 175, "starts": 21, "lift": 240,
+            "assets": 120, "nro": 240, "nsp": 60, "sdcard": 5}
 ORDER = list(EXPECTED)
 EXPORT_EXPECTED = 90
 
 
 class Progress:
-    def __init__(self, export: bool = False, clock=time.monotonic):
+    def __init__(self, export: bool = False, clock=time.monotonic, nsp: bool = True):
         self.clock = clock
-        self.names = ORDER + (["export"] if export else [])
+        self.names = [n for n in ORDER if nsp or n != "nsp"] + (["export"] if export else [])
         self.expected = dict(EXPECTED, export=EXPORT_EXPECTED)
         self.state = {n: "pending" for n in self.names}
         self.took: dict[str, float] = {}

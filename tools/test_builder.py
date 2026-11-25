@@ -2,6 +2,7 @@
 """The builder program (host/builder) without Docker, Steam or the game."""
 import hashlib
 import io
+import json
 import os
 import re
 import sys
@@ -113,11 +114,26 @@ def test_exe(tmp: Path) -> None:
     right, original = tmp / "right.exe", tmp / "isaac-ng.exe"
     right.write_bytes(b"R" * 64)
     original.write_bytes(b"O" * 70)
-    saved = checks.PE_SHA256, checks.STEAM_EXE_SHA256, checks.PE_SIZE
+    (tmp / "retired.exe").write_bytes(b"Q" * 64)
+    registry = tmp / "versions"
+    for name, supported, pe, steam_exe, buildid in (("9.9.9.1", False, b"Q" * 64, b"P" * 70, "1"),
+                                                    ("9.9.9.2", True, b"R" * 64, b"O" * 70, "2")):
+        (registry / name).mkdir(parents=True)
+        (registry / name / "version.json").write_text(json.dumps({
+            "version": name, "supported": supported,
+            "steam": {"buildid": buildid, "exe_sha256": hashlib.sha256(steam_exe).hexdigest().upper()},
+            "pe": {"sha256": hashlib.sha256(pe).hexdigest().upper(), "size": len(pe)}}))
+    saved = (checks.versions.ROOT, checks.VERSION, checks.PE_SHA256, checks.STEAM_EXE_SHA256, checks.PE_SIZE,
+             checks.PE_SIZES)
+    checks.versions.ROOT = registry
+    checks.VERSION = checks.versions.latest()
     checks.PE_SHA256 = hashlib.sha256(b"R" * 64).hexdigest()
     checks.STEAM_EXE_SHA256 = hashlib.sha256(b"O" * 70).hexdigest()
-    checks.PE_SIZE = 64
+    checks.PE_SIZE, checks.PE_SIZES = 64, {64}
     try:
+        retired = checks.check_exe(tmp / "retired.exe")[0]
+        assert retired.key == "exe.retired" and retired.args == {"path": tmp / "retired.exe", "got": "9.9.9.1",
+                                                                 "version": "9.9.9.2"}, retired
         seen = []
         assert checks.classify_exe(right, seen.append)[0] == "ok" and seen[-1] == 1.0
         assert checks.check_exe(original)[0].key == "exe.original"
@@ -142,7 +158,8 @@ def test_exe(tmp: Path) -> None:
         assert set(offered) == {deep / "same-size-wrong.exe", deep / "renamed.exe", deep / "Isaac-unpacked-old.EXE"}, \
             "the game's own isaac-ng.exe still has the DRM and is never suggested"
     finally:
-        checks.PE_SHA256, checks.STEAM_EXE_SHA256, checks.PE_SIZE = saved
+        (checks.versions.ROOT, checks.VERSION, checks.PE_SHA256, checks.STEAM_EXE_SHA256, checks.PE_SIZE,
+         checks.PE_SIZES) = saved
 
 
 def plan(**kw) -> dockerctl.Plan:
@@ -169,8 +186,10 @@ def test_command_linux(tmp: Path) -> None:
     assert m[2] == "type=bind,source=%s,target=/work" % Path("/srv/u/IsaacSwitchBuild/work")
     tail = cmd[cmd.index("img@sha256:abc"):]
     assert tail == ["img@sha256:abc", "--progress", "json"], tail
-    cmd = dockerctl.build_command(plan(steam=True, threads=4, jobs=3), "linux", (5, 6))
-    assert cmd[-5:] == ["--steam", "--threads", "4", "--jobs", "3"]
+    cmd = dockerctl.build_command(plan(steam=True, jobs=3), "linux", (5, 6))
+    assert cmd[-3:] == ["--steam", "--jobs", "3"]
+    cmd = dockerctl.build_command(plan(fmt="nro"), "linux", (5, 6))
+    assert cmd[-2:] == ["--format", "nro"], "nsp is build_all.py's default and is not passed"
 
 
 def test_command_windows(tmp: Path) -> None:
@@ -236,14 +255,14 @@ def test_progress(tmp: Path) -> None:
                 "number": progress.ORDER.index(name) + 1, "total": 9})
 
     stage("prepare", "skipped")
-    stage("ghidra", "running")
+    stage("lift", "running")
     now[0] = 750.0
     half = p.fraction()
-    assert abs(half - 750 / (sum(progress.EXPECTED.values()) - progress.EXPECTED["prepare"])) < 1e-9, half
-    stage("ghidra", "done", 1400)
-    assert p.took["ghidra"] == 1400 and p.current == "ghidra"
+    assert 0.0 < half < 1.0, half
+    stage("lift", "done", 1400)
+    assert p.took["lift"] == 1400 and p.current == "lift"
     left = p.eta()
-    assert left == sum(v for k, v in progress.EXPECTED.items() if k not in ("prepare", "ghidra"))
+    assert left == sum(v for k, v in progress.EXPECTED.items() if k not in ("prepare", "lift"))
     stage("tables", "running")
     now[0] = 10_000.0               # a stage longer than expected never goes negative
     assert p.eta() >= progress.EXPECTED["tables"] * 0.05 and p.fraction() < 1.0
@@ -285,6 +304,20 @@ def test_sdcard(tmp: Path) -> None:
     copied, _ = sdcard.copy_to_card(src, card)
     assert copied == 1, "only the NRO: the game files are already there"
     assert (card / sdcard.NRO).read_bytes() == b"newer nro"
+
+    # --format nsp: the installer and its payload, always copied even at the same size.
+    nsp = tmp / "sd-nsp"
+    assert not sdcard.has_result(nsp)
+    (nsp / sdcard.PAYLOAD).mkdir(parents=True)
+    (nsp / sdcard.INSTALLER).write_bytes(b"installer")
+    assert not sdcard.has_result(nsp), "an installer without its payload is not a result"
+    for name, data in (("install.txt", b"title_id 1"), ("program.nca", b"P" * 500)):
+        (nsp / sdcard.PAYLOAD / name).write_bytes(data)
+    assert sdcard.has_result(nsp)
+    assert sdcard.copy_to_card(nsp, card)[0] == 3
+    (nsp / sdcard.PAYLOAD / "program.nca").write_bytes(b"Q" * 500)
+    assert sdcard.copy_to_card(nsp, card)[0] == 3, "a rebuilt payload of the same size is copied again"
+    assert (card / sdcard.PAYLOAD / "program.nca").read_bytes() == b"Q" * 500
 
 
 def test_redact(tmp: Path) -> None:

@@ -25,8 +25,11 @@ HOST = HERE.parent
 def pyinstaller(name: str, out: Path, windowed: bool) -> Path:
     with tempfile.TemporaryDirectory() as tmp:
         cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--clean", "--noconfirm", "--name", name,
-               "--paths", str(HOST), "--hidden-import", "build_all",
+               "--paths", str(HOST), "--hidden-import", "build_all", "--hidden-import", "versions",
                "--add-data", "%s%s." % (HOST / "upstream.json", os.pathsep),
+               # Only version.json: the overlay and the function list are used inside the image.
+               *[arg for v in sorted((HOST / "versions").glob("*/version.json"))
+                 for arg in ("--add-data", "%s%sversions/%s" % (v, os.pathsep, v.parent.name))],
                "--add-data", "%s%sisb" % (HERE / "isb" / "image.json", os.pathsep),
                "--distpath", str(out), "--workpath", tmp, "--specpath", tmp]
         if windowed:

@@ -1,0 +1,21 @@
+{
+  "version": "1.9.7.19",
+  "supported": true,
+  "steam": {
+    "buildid": "26836484",
+    "exe_sha256": "024ED7300FBED8B65AFA1FDD1E36F20B446EDE65DCDDA0C8375D0423AA9F078D"
+  },
+  "pe": {
+    "sha256": "8C9526C1BF0910A930CBA4037D120B357779940BBAE34FABC8AFAF56150E0B6A",
+    "size": 9347072
+  },
+  "upstream": {
+    "overlay": "upstream.patch"
+  },
+  "functions": {
+    "file": "functions.txt",
+    "count": 25296,
+    "recovered": 11013,
+    "sha256": "2523f435484d98a3b2b19cd7007f42fc73f897ada38399cdf50c1ded17784501"
+  }
+}

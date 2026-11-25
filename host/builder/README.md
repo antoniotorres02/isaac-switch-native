@@ -9,8 +9,9 @@ check and every step explained.
 > remove it, nor explain how to do it. Whether and how you do it is your decision
 > and your responsibility under the law that applies to you: check it first.
 > The program recognises Steam's original `isaac-ng.exe` and tells you that it is
-> the right version but still has DRM; the file it needs has SHA-256
-> `b4743967f3d31050f7b4222e42ac6beae6a0b7850b1f1adaac07ef7b94d01ec8`.
+> the right version but still has DRM; for v1.9.7.19 the file it needs has SHA-256
+> `8c9526c1bf0910a930cba4037d120b357779940bbae34fabc8afaf56150e0b6a`
+> (each version's is in `../versions/<version>/version.json`).
 
 **Linux is tested end to end. Windows is not tested yet**: the Windows paths (Docker
 Desktop, a Docker volume for the work, the copy to your folder) were exercised on
@@ -28,13 +29,14 @@ From the [latest release](https://github.com/antoniotorres02/isaac-switch-native
 
 ## What you need
 
-- The Binding of Isaac: Rebirth with every expansion up to Repentance+, v1.9.7.17,
+- The Binding of Isaac: Rebirth with every expansion up to Repentance+, at the
+  version Steam ships today (v1.9.7.19; the program names it if yours differs),
   installed with Steam.
 - The executable without DRM (see above).
 - **Docker**: Docker Desktop on Windows, Docker Engine on Linux. You do not need
   to set it up beforehand: the program sees if it is missing, not running, or short
   of memory, and offers the fix (below).
-- 8 GiB of memory for Docker, about 8 GiB of disk, and about 45 minutes.
+- 4 GiB of memory for Docker, about 6 GiB of disk, and about 10–20 minutes.
 
 ## Using it
 
@@ -55,9 +57,9 @@ Run `isaac-switch-builder` (on Windows, `isaac-switch-builder.exe`). Six pages:
    - on Linux, not running or not allowed: **Copy the command**
      (`sudo systemctl start docker`, or `sudo usermod -aG docker $USER`);
    - too little memory, on Windows: **Open .wslconfig**, explained step by step;
-   - then the tool image (downloaded once, ~7.4 GB).
+   - then the tool image (downloaded once, ~230 MB; ~1 GB on disk).
 4. **Ready**: where the result goes, **Check everything**, and **Start the build**.
-   Steam Cloud and thread counts are under *Advanced options*.
+   Steam Cloud and the number of jobs are under *Advanced options*.
 5. **Building**: the nine stages, how long is left, and **Stop**. Stopping is safe:
    **Carry on from where it was** resumes at the stage it was on. The computer does
    not go to sleep while it builds.
@@ -91,7 +93,7 @@ executable and the game mounted read-only, and reads its progress as JSON lines
 
 | | Linux | Windows |
 | --- | --- | --- |
-| Work files (~4 GB) | `<folder>/work`, a normal folder | the Docker volume `isaac-switch-work`: a Windows folder mounted into Linux is slow for Ghidra and ignores letter case |
+| Work files (~3 GB) | `<folder>/work`, a normal folder | the Docker volume `isaac-switch-work`: a Windows folder mounted into Linux is slow and ignores letter case |
 | Result | `<folder>/work/out/sd-card` | copied to `<folder>/sd-card` at the end (`--export`) |
 | Default folder | `~/IsaacSwitchBuild` | `Documents\IsaacSwitchBuild` |
 
@@ -133,5 +135,6 @@ The image has to be public before the program is useful to others:
 3. Push a tag `vX.Y.Z`: `.github/workflows/release.yml` builds the program on
    Windows and Linux and attaches it to the release.
 
-The image contains the tools only (Ghidra, devkitA64, Emscripten, upstream's
-pipeline at a pinned commit), nothing from the game.
+The image contains the tools only (devkitA64 and the Switch libraries the NRO links,
+Python, upstream's pipeline at a pinned commit), nothing from the game. The game
+versions it can build come with the program's source, in `../versions/`.

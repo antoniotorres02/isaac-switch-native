@@ -11,14 +11,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import build_all
+import versions
 
 from . import steam
 
-INFO = build_all.UPSTREAM_INFO
-PE_SHA256 = INFO["game_pe_sha256"].lower()
-PE_SIZE = int(INFO["game_pe_size"])
-STEAM_EXE_SHA256 = INFO["steam_exe_sha256"].lower()
-STEAM_BUILDID = str(INFO["steam_buildid"])
+# The newest supported version: what the texts name and what the search looks for.
+VERSION = versions.latest()
+PE_SHA256 = VERSION.pe_sha256
+PE_SIZE = VERSION.pe_size
+PE_SIZES = versions.pe_sizes()
+STEAM_EXE_SHA256 = VERSION.steam_exe_sha256
+STEAM_BUILDID = VERSION.buildid
 GIB = build_all.GIB
 NEED_DISK = build_all.MIN_FREE_DISK
 NEED_MEMORY = build_all.MIN_MEMORY
@@ -78,29 +81,33 @@ def check_game(game: steam.GameInstall | None) -> list[Item]:
             items.append(Item(FAIL, "game.dlc_missing", {"dlcs": ", ".join(game.missing_dlcs)}))
         else:
             items.append(Item(OK, "game.dlc_ok"))
-        if game.buildid and game.buildid != STEAM_BUILDID:
-            items.append(Item(WARN, "game.build_differs", {"got": game.buildid, "want": STEAM_BUILDID}))
+        known = versions.by_buildid(game.buildid) if game.buildid else None
+        if game.buildid and not (known and known.supported):
+            items.append(Item(WARN, "game.build_differs", {"got": game.buildid, "want": STEAM_BUILDID,
+                                                           "version": VERSION.name}))
     original = path / "isaac-ng.exe"
     if original.is_file():
-        if sha256_file(original) == STEAM_EXE_SHA256:
-            items.append(Item(OK, "game.version_ok"))
+        found = versions.by_steam_exe_sha256(sha256_file(original))
+        if found and found.supported:
+            items.append(Item(OK, "game.version_ok", {"version": found.name}))
         else:
-            items.append(Item(WARN, "game.version_differs"))
+            items.append(Item(WARN, "game.version_differs", {"version": VERSION.name}))
     return items
 
 
 # ---- the executable ----------------------------------------------------------------
 
 def classify_exe(path: Path | None, progress=None) -> tuple[str, str | None]:
-    """'ok' | 'original' | 'other' | 'missing' | 'folder', and its sha256."""
+    """'ok' | 'original' | 'retired' | 'other' | 'missing' | 'folder', and its sha256."""
     if path is None or not path.exists():
         return "missing", None
     if path.is_dir():
         return "folder", None
     digest = sha256_file(path, progress)
-    if digest == PE_SHA256:
-        return "ok", digest
-    if digest == STEAM_EXE_SHA256:
+    v = versions.by_pe_sha256(digest)
+    if v:
+        return ("ok" if v.supported else "retired"), digest
+    if versions.by_steam_exe_sha256(digest):
         return "original", digest
     return "other", digest
 
@@ -111,8 +118,13 @@ def check_exe(path: Path | None, progress=None) -> list[Item]:
         return [Item(OK, "exe.ok", {"path": path})]
     if kind == "original":
         return [Item(FAIL, "exe.original", {"path": path}, fix="choose_exe")]
+    if kind == "retired":
+        old = versions.by_pe_sha256(digest)
+        return [Item(FAIL, "exe.retired", {"path": path, "got": old.name, "version": VERSION.name},
+                     fix="choose_exe")]
     if kind == "other":
-        return [Item(FAIL, "exe.other", {"path": path, "got": digest, "want": PE_SHA256}, fix="choose_exe")]
+        return [Item(FAIL, "exe.other", {"path": path, "got": digest, "want": PE_SHA256,
+                                         "version": VERSION.name}, fix="choose_exe")]
     if kind == "folder":
         return [Item(FAIL, "exe.folder", {"path": path}, fix="choose_exe")]
     return [Item(FAIL, "exe.missing", fix="choose_exe")]
@@ -151,7 +163,7 @@ def exe_candidates(dirs: list[Path], depth: int = 2, game: Path | None = None, l
         for e in _walk(d, depth):
             name = e.name.lower()
             try:
-                right_size = e.stat().st_size == PE_SIZE
+                right_size = e.stat().st_size in PE_SIZES
             except OSError:
                 continue
             named = name.endswith(".exe") and any(k in name for k in ("isaac-ng", "isaac_ng", "isaacng", "unpacked"))
@@ -163,7 +175,7 @@ def exe_candidates(dirs: list[Path], depth: int = 2, game: Path | None = None, l
                 if len(found) >= limit:
                     return found
     # The exact size first: those are the ones that can be right.
-    return sorted(found, key=lambda p: p.stat().st_size != PE_SIZE)
+    return sorted(found, key=lambda p: p.stat().st_size not in PE_SIZES)
 
 
 def find_exe(dirs: list[Path], depth: int = 2) -> Path | None:
@@ -171,9 +183,10 @@ def find_exe(dirs: list[Path], depth: int = 2) -> Path | None:
     for d in dirs:
         for e in _walk(d, depth):
             try:
-                if e.stat().st_size != PE_SIZE:
+                if e.stat().st_size not in PE_SIZES:
                     continue
-                if sha256_file(Path(e.path)) == PE_SHA256:
+                v = versions.by_pe_sha256(sha256_file(Path(e.path)))
+                if v and v.supported:
                     return Path(e.path)
             except OSError:
                 continue

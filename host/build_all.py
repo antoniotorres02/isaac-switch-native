@@ -6,14 +6,18 @@ docker/Dockerfile (see GUIDE.md). Everything is checked before anything slow
 starts, finished stages are remembered in <work>/stamps so a run that was cut
 short carries on where it stopped, and each stage keeps its log in <work>/logs.
 
-    build_all.py [--steam] [--check-only] [--progress json] [--export DIR]
+    build_all.py [--steam] [--format nsp|nro] [--check-only] [--progress json] [--export DIR]
+
+--format nsp (the default) prepares an install: the installer NRO and the game
+as a payload it installs as a title on the HOME menu (installer/). --format nro
+is the homebrew NRO with the game's files loose on the SD card, as before.
 
 With --progress json every line on stdout is one JSON object (see emit_json),
 for the builder program in builder/; the text output is for people.
 
 It reads the executable and the game folder and never writes to them. All it
-produces stays under <work>, and the NRO it builds contains the memory image of
-the executable: it is for you alone and must not be shared.
+produces stays under <work>, and the NRO and the payload it builds contain the
+memory image of the executable: they are for you alone and must not be shared.
 """
 from __future__ import annotations
 
@@ -29,15 +33,22 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import versions  # noqa: E402
+
 UPSTREAM_INFO = json.loads((HERE / "upstream.json").read_text(encoding="utf-8"))
 
 # Bump when a stage changes what it produces: older stamps stop counting.
-PIPELINE_VERSION = 1
+# 2: no Ghidra (versions/<v>/functions.txt) and no Emscripten (upstream_steps.py).
+PIPELINE_VERSION = 2
 
 GIB = 1024 ** 3
-MIN_FREE_DISK = 8 * GIB     # see "What you need" in GUIDE.md
-MIN_MEMORY = 8 * GIB        # Ghidra alone asks for a 6 GiB heap
-GHIDRA_HEAP = "6G"
+MIN_FREE_DISK = 6 * GIB     # see "What you need" in GUIDE.md
+MIN_MEMORY = 4 * GIB        # one compile of the largest translated file, plus the rest
+# What one job may take, measured: more memory, more jobs at once (default_jobs).
+JOB_MEMORY = 1536 * 1024 ** 2       # a compile: 1.25 GB peak for the largest translated file
+LIFT_JOB_MEMORY = 2 * GIB           # a lift worker: 1.7 GB, its rescue pass 1.8 GB (3 buckets per part)
+LIFT_BUCKETS_PER_PART = 3           # upstream-patches/0001: a worker's memory grows with each bucket
 
 # What the game has to contain before it is worth starting. The exact list comes
 # later, from the game itself (upstream's ship.py).
@@ -85,19 +96,36 @@ def memory_limit() -> int | None:
 
 # ---- checks: seconds, before anything slow -------------------------------------
 
-def check_exe(exe: Path, expected: str) -> list[str]:
+def identify_exe(exe: Path, root: Path | None = None) -> tuple[list[str], "versions.Version | None"]:
+    """(problems, version): which game version the executable is, and whether it can be built."""
     if not exe.exists():
-        return ["The executable was not found at %s." % exe]
+        return ["The executable was not found at %s." % exe], None
     if not exe.is_file():
         # Docker makes an empty folder when the path it was told to mount does not exist.
-        return ["%s is a folder, not a file. Check the executable's path in your docker run command." % exe]
-    got = sha256_file(exe)
-    if got.lower() != expected.lower():
-        return ["The executable is not the one this build needs (see \"The executable\" in GUIDE.md).\n"
-                "    expected sha256 %s\n    this file has   %s\n"
-                "    Every address in the build belongs to one exact file, so another one cannot work."
-                % (expected.lower(), got.lower())]
-    return []
+        return ["%s is a folder, not a file. Check the executable's path in your docker run command." % exe], None
+    got = sha256_file(exe).lower()
+    known = versions.supported(root)
+    names = ", ".join("v%s (Steam build %s)" % (v.name, v.buildid) for v in known) or "none"
+    v = versions.by_pe_sha256(got, root)
+    if v and v.supported:
+        return [], v
+    if v:
+        return ["This is the executable of v%s, which this builder no longer supports. It supports %s: "
+                "update the game in Steam and use the new executable." % (v.name, names)], None
+    v = versions.by_steam_exe_sha256(got, root)
+    if v:
+        return ["This is Steam's original executable of v%s, still with its DRM. The build needs it without "
+                "the DRM (see \"The executable\" in GUIDE.md)." % v.name], None
+    return ["This executable is not a game version this builder knows (sha256 %s). It supports %s. "
+            "If Steam updated the game, a newer builder is needed." % (got, names)], None
+
+
+def check_exe(exe: Path, expected: str) -> list[str]:
+    """The older single-hash check, kept for callers that know the hash they want."""
+    problems, v = identify_exe(exe)
+    if problems or v.pe_sha256 == expected.lower():
+        return problems
+    return ["The executable is not the one this build needs (expected sha256 %s)." % expected.lower()]
 
 
 def check_game(game: Path) -> list[str]:
@@ -132,15 +160,27 @@ def check_work(work: Path, need_disk: int, memory: int | None) -> list[str]:
     return problems
 
 
+def default_jobs(per_job: int = JOB_MEMORY) -> int:
+    """All CPUs but one, as long as each job has per_job bytes: the translated files
+    are up to 22 MB of C each, and a compile of one takes over a gigabyte."""
+    cpus = max(1, (os.cpu_count() or 4) - 1)
+    memory = memory_limit()
+    if memory is None:
+        return cpus
+    return max(1, min(cpus, (memory - GIB) // per_job))
+
+
 # ---- stages ----------------------------------------------------------------------
 
 class Stage:
     """`produces`, when given, returns the file the stage exists to make: a stamp
     without it does not count (a work folder from before a rename, say)."""
 
-    def __init__(self, name: str, title: str, run, depends_on_options: bool = False, produces=None):
+    def __init__(self, name: str, title: str, run, depends_on_options: bool = False, produces=None,
+                 depends_on_format: bool = False):
         self.name, self.title, self.run = name, title, run
         self.depends_on_options = depends_on_options
+        self.depends_on_format = depends_on_format
         self.produces = produces
 
 
@@ -149,7 +189,7 @@ def emit_json(out, event: str, **fields) -> None:
     texts, then exit 2), checked, stage (number, total, name, title, state
     "skipped" | "running" | "done", seconds), log (the stage log's last line, at
     most every LOG_EVERY seconds), failed (message, log, tail), exporting,
-    exported (path, files), stopped, done (seconds, nro_sha256, sd_card)."""
+    exported (path, files), stopped, done (seconds, nro_sha256, sd_card, format)."""
     fields["event"] = event
     out.write(json.dumps(fields) + "\n")
     out.flush()
@@ -162,7 +202,9 @@ class Runner:
     """Runs stages in order. A stage whose stamp matches is skipped; once one has
     to run, the stages after it run too, since they consume its output."""
 
-    def __init__(self, work: Path, exe_hash: str, options: str, out=sys.stdout, json_mode: bool = False):
+    def __init__(self, work: Path, exe_hash: str, options: str, out=sys.stdout, json_mode: bool = False,
+                 fmt: str = "nsp"):
+        self.fmt = fmt
         self.stamps = work / "stamps"
         self.logs = work / "logs"
         self.exe_hash = exe_hash
@@ -172,8 +214,9 @@ class Runner:
         self.log_path: Path | None = None
 
     def key(self, stage: Stage) -> str:
-        return "%d %s %s %s" % (PIPELINE_VERSION, stage.name, self.exe_hash,
-                                self.options if stage.depends_on_options else "-")
+        key = "%d %s %s %s" % (PIPELINE_VERSION, stage.name, self.exe_hash,
+                               self.options if stage.depends_on_options else "-")
+        return key + " " + self.fmt if stage.depends_on_format else key
 
     def say(self, text: str) -> None:
         if not self.json_mode:
@@ -283,22 +326,30 @@ def duration(seconds: float) -> str:
 
 def build_stages(args, up: Path, out: Path) -> list[Stage]:
     lift = up / "output" / "recomp" / "lift"
-    threads = args.threads or min(os.cpu_count() or 4, 8)
-    jobs = args.jobs or max(1, (os.cpu_count() or 4) - 1)
+    jobs = args.jobs or default_jobs()
+    lift_jobs = args.jobs or default_jobs(LIFT_JOB_MEMORY)
+    version = args.version
 
     def prepare(r: Runner) -> None:
-        if not (up / "scripts").is_dir():
-            shutil.rmtree(up, ignore_errors=True)
-            shutil.copytree(args.upstream_src, up, symlinks=True)
+        # Always from scratch: the work folder may hold another version's tree.
+        shutil.rmtree(up, ignore_errors=True)
+        shutil.copytree(args.upstream_src, up, symlinks=True)
+        # Our changes to upstream for every version (upstream-patches/), then the version's own.
+        for fix in sorted((HERE / "upstream-patches").glob("*.patch")):
+            r.sh(["patch", "-p1", "--forward", "--batch", "-i", fix], cwd=up)
+        if version.overlay:
+            r.sh(["patch", "-p1", "--forward", "--batch", "-i", version.overlay], cwd=up)
+        pe_py = (up / "scripts" / "decomp" / "tools" / "pe.py").read_text(encoding="utf-8")
+        if 'EXPECTED_SHA256 = "%s"' % version.pe_sha256.upper() not in pe_py:
+            raise StageFailed("the upstream overlay of v%s does not expect its executable" % version.name)
         shutil.copyfile(args.exe, up / "tools" / "isaac-ng.unpacked.exe")
 
-    def ghidra(r: Runner) -> None:
-        r.sh(["node", "scripts/recomp/export-all.mjs", "--stage", "all", "--threads", threads,
-              "--timeout", 240, "--heap", GHIDRA_HEAP], cwd=up)
+    def functions(r: Runner) -> None:
+        r.sh([sys.executable, HERE / "functions_data.py", "write", version.folder, up / "output" / "recomp" / "export"])
 
     def tables(r: Runner) -> None:
         for script in (["census/run_all.py"], ["host/boot_tables.py"], ["host/memimage.py"],
-                       ["host/verify_memimage.py"], ["host/gen_shims.py"], ["host/lua_build.py", "--build"]):
+                       ["host/verify_memimage.py"], ["host/gen_shims.py"]):
             r.sh(["python", "scripts/recomp/" + script[0]] + script[1:], cwd=up)
         r.sh(["python", "scripts/decomp/tools/build-pe-index.py"], cwd=up)
 
@@ -316,7 +367,8 @@ def build_stages(args, up: Path, out: Path) -> list[Stage]:
     def do_lift(r: Runner) -> None:
         for d in (lift / "gu", lift / "gu.pristine"):
             shutil.rmtree(d, ignore_errors=True)
-        r.sh(["python", "scripts/recomp/lift/lift_parallel.py", "--jobs", jobs,
+        shutil.rmtree(lift / "boot-web-fast", ignore_errors=True)
+        r.sh(["python", "scripts/recomp/lift/lift_parallel.py", "--jobs", lift_jobs,
               "--exe", "tools/isaac-ng.unpacked.exe",
               "--ghidra-functions", "output/recomp/export/functions.jsonl",
               "--fragments-tsv", "output/recomp/export/recovered-functions.tsv",
@@ -326,46 +378,73 @@ def build_stages(args, up: Path, out: Path) -> list[Stage]:
               "--hand-written", "scripts/recomp/host/src/missing_fns.c",
               "--dispatch", "auto", "--max-insns", 100000, "--split-va", "0x30000", "--trace-va",
               "--out", "output/recomp/lift/gu", "--module", "lifted",
-              "--stats", "output/recomp/lift/gu/stats.json"], cwd=up)
+              "--stats", "output/recomp/lift/gu/stats.json"], cwd=up,
+             env={"ISAAC_LIFT_BUCKETS_PER_PART": str(LIFT_BUCKETS_PER_PART)})
         r.sh(["python", "scripts/recomp/lift/patch_reentry.py", "--dir", "output/recomp/lift/gu",
               "--exe", "tools/isaac-ng.unpacked.exe"], cwd=up)
-        shutil.copytree(lift / "gu", lift / "gu.pristine")
-
-    def boot(r: Runner) -> None:
-        # build_boot.py rewrites gu/ in place, so a second run starts from the copy.
-        shutil.rmtree(lift / "gu")
-        shutil.copytree(lift / "gu.pristine", lift / "gu")
-        r.sh(["python", "scripts/recomp/lift/build_boot.py", "--web", "--fast", "--jobs", min(jobs, 4)],
-             cwd=up, env={"ISAAC_CALL_SLIM": "0"})
+        # The patches rewrite gu/ in place; a second run lifts again (minutes, not a copy of 0.5 GB).
+        r.sh([sys.executable, HERE / "upstream_steps.py", "patch", up], cwd=up)
 
     def assets(r: Runner) -> None:
         r.sh(["python", "scripts/recomp/assets/bundle.py", "build", args.game, ".scratch/game-bundle"], cwd=up)
-        r.sh(["python", "scripts/recomp/assets/ship.py", "build"], cwd=up)
+        r.sh([sys.executable, HERE / "upstream_steps.py", "index", up], cwd=up)
 
     def nro(r: Runner) -> None:
         cmd = ["python", HERE / "build_native.py", "--profile", "switch", "--upstream", up,
                "--out", out / "browsing-native", "--jobs", jobs]
         r.sh(cmd + ([] if args.steam else ["--no-steam"]))
 
-    def sd_card(r: Runner) -> None:
-        make_sd_card(up / ".scratch" / "game-dist" / "instance_index.json", up / ".scratch" / "game-bundle",
-                     nro_path(out, args.steam), out / "sd-card")
+    def nsp(r: Runner) -> None:
+        variant = nro_path(out, args.steam).parent
+        romfs = variant / "romfs"
+        r.sh(["python", HERE / "installer" / "build.py", "--out", out / "installer"])
+        r.sh(["python", HERE / "installer" / "payload.py", "--elf", variant / "isaac-repentance-ns1-recomp.elf",
+              "--segs", romfs / "isaac.segs.bin", "--index", romfs / "instance_index.json",
+              "--bundle", up / ".scratch" / "game-bundle", "--bench", romfs / "isaac-bench",
+              "--out", payload_dir(out)])
 
+    def sd_card(r: Runner) -> None:
+        if args.format == "nsp":
+            make_install_card(out / "installer" / INSTALLER_NRO, payload_dir(out), out / "sd-card")
+        else:
+            make_sd_card(up / ".scratch" / "game-dist" / "instance_index.json", up / ".scratch" / "game-bundle",
+                         nro_path(out, args.steam), out / "sd-card")
+
+    nsp_stage = [Stage("nsp", "Preparing the install (NSP payload and installer)", nsp, depends_on_options=True,
+                       produces=lambda: payload_dir(out) / "install.txt")] if args.format == "nsp" else []
     return [
         Stage("prepare", "Preparing the sources", prepare),
-        Stage("ghidra", "Analysing the executable with Ghidra (the long one)", ghidra),
-        Stage("tables", "Building tables, memory image and Lua", tables),
+        Stage("functions", "Listing the game's functions", functions),
+        Stage("tables", "Building tables and the memory image", tables),
         Stage("starts", "Finding function entries", starts),
-        Stage("lift", "Translating the game to C", do_lift),
-        Stage("boot", "Patching the translated code", boot),
+        Stage("lift", "Translating the game to C (the long one)", do_lift),
         Stage("assets", "Indexing the game's files", assets),
         Stage("nro", "Compiling the NRO", nro, depends_on_options=True, produces=lambda: nro_path(out, args.steam)),
-        Stage("sdcard", "Preparing the SD card folder", sd_card, depends_on_options=True),
+    ] + nsp_stage + [
+        Stage("sdcard", "Preparing the SD card folder", sd_card, depends_on_options=True, depends_on_format=True),
     ]
 
 
 def nro_path(out: Path, steam: bool) -> Path:
     return out / "browsing-native" / ("switch" if steam else "switch-nosteam") / "isaac-repentance-ns1-recomp.nro"
+
+
+INSTALLER_NRO = "isaac-recomp-installer.nro"
+
+
+def payload_dir(out: Path) -> Path:
+    return out / "nsp" / "install"
+
+
+def make_install_card(installer: Path, payload: Path, sd: Path) -> int:
+    """<sd>/switch/isaac-recomp-installer.nro and the payload it reads from
+    <sd>/switch/isaac-recomp/install/ (installer/source/main.c)."""
+    shutil.rmtree(sd, ignore_errors=True)
+    place(installer, sd / "switch" / INSTALLER_NRO)
+    files = sorted(p for p in payload.iterdir() if p.is_file())
+    for p in files:
+        place(p, sd / "switch" / "isaac-recomp" / "install" / p.name)
+    return len(files) + 1
 
 
 def place(src: Path, dst: Path) -> None:
@@ -403,9 +482,12 @@ def main(argv=None) -> int:
                     help="the prepared upstream checkout, copied into <work> at the first run")
     ap.add_argument("--steam", action="store_true",
                     help="include the Steam sign-in and Cloud sync (an unofficial client: read STEAM-CLOUD.md first)")
+    ap.add_argument("--format", choices=("nsp", "nro"), default="nsp",
+                    help="nsp: an installer and the game as a title for the HOME menu (default); "
+                         "nro: the homebrew NRO with the game's files on the SD card")
     ap.add_argument("--check-only", action="store_true", help="run the checks and stop")
-    ap.add_argument("--threads", type=int, help="Ghidra threads (default: up to 8)")
-    ap.add_argument("--jobs", type=int, help="compile jobs (default: all CPUs but one)")
+    ap.add_argument("--threads", type=int, help=argparse.SUPPRESS)   # Ghidra's, before version 2: ignored
+    ap.add_argument("--jobs", type=int, help="parallel jobs (default: all CPUs but one, as memory allows)")
     ap.add_argument("--progress", choices=("text", "json"), default="text",
                     help="json: one JSON object per line on stdout, for the builder program")
     ap.add_argument("--export", type=Path,
@@ -417,9 +499,9 @@ def main(argv=None) -> int:
         if not json_mode:
             print(text, flush=True)
 
-    expected = UPSTREAM_INFO["game_pe_sha256"]
     tell("Checking your files (this reads the executable once)...")
-    problems = check_exe(args.exe, expected) + check_game(args.game)
+    problems, args.version = identify_exe(args.exe)
+    problems += check_game(args.game)
     started_before = (args.work / "upstream" / "output").is_dir()
     problems += check_work(args.work, MIN_FREE_DISK // 2 if started_before else MIN_FREE_DISK, memory_limit())
     if args.export and not problems:
@@ -431,20 +513,23 @@ def main(argv=None) -> int:
         for p in problems:
             print("  - " + p, file=sys.stderr)
         return 2
-    tell("Executable, game folder, disk and memory are fine.")
+    tell("Game v%s; executable, game folder, disk and memory are fine." % args.version.name)
     if json_mode:
-        emit_json(sys.stdout, "checked", resumed=started_before)
+        emit_json(sys.stdout, "checked", resumed=started_before, version=args.version.name)
     if args.check_only:
         return 0
 
     # Tools that want a home or a cache of their own, whichever user this runs as.
     (args.work / ".home").mkdir(exist_ok=True)
     os.environ["HOME"] = str(args.work / ".home")
-    os.environ["EM_CACHE"] = str(args.work / ".cache" / "emscripten")
+    os.environ["PYTHONHASHSEED"] = "0"
 
     up, out = args.work / "upstream", args.work / "out"
     options = "steam" if args.steam else "no-steam"
-    runner = Runner(args.work, expected.lower(), options, json_mode=json_mode)
+    patches = hashlib.sha256(b"".join(f.read_bytes() for f in sorted((HERE / "upstream-patches").glob("*.patch"))))
+    runner = Runner(args.work, "%s %s %s" % (args.version.pe_sha256, args.version.fingerprint(),
+                                             patches.hexdigest()[:16]), options,
+                    json_mode=json_mode, fmt=args.format)
     started = time.monotonic()
     signal.signal(signal.SIGTERM, on_sigterm)
     try:
@@ -481,12 +566,15 @@ def main(argv=None) -> int:
     took = time.monotonic() - started
     digest = sha256_file(nro)
     if json_mode:
-        emit_json(sys.stdout, "done", seconds=round(took, 1), nro_sha256=digest, sd_card=str(sd))
+        emit_json(sys.stdout, "done", seconds=round(took, 1), nro_sha256=digest, sd_card=str(sd), format=args.format)
         return 0
     print("\nDone in %s." % duration(took))
     print("NRO sha256: %s" % digest)
     print("Copy the contents of %s to the root of your SD card." % sd)
-    print("The NRO contains the game's executable image: it is for you alone, do not share it.")
+    if args.format == "nsp":
+        print("On the console, open %s from the homebrew menu and press A: the game is" % INSTALLER_NRO)
+        print("installed on the HOME menu (Atmosphère with sigpatches). Mods go in sdmc:/switch/isaac-recomp/mods/.")
+    print("What it built contains the game's executable image: it is for you alone, do not share it.")
     return 0
 
 

@@ -16,17 +16,19 @@ the same executable (below) and Docker.
 ## What you need
 
 - **Your own purchased copy** of The Binding of Isaac: Rebirth with all its
-  expansions through Repentance+, version **v1.9.7.17**.
+  expansions through Repentance+, at the version Steam ships today (**v1.9.7.19**).
+  The build names the version it supports if yours differs.
 - **The executable described below.** This is the one step this guide does not
   cover.
 - **[Docker](https://docs.docker.com/get-docker/).** Nothing else gets installed.
-- **8 GiB of free disk and 8 GiB of memory** for the build (it ends up using 3.5 GiB
-  of disk), plus 7.4 GB for the Docker image.
+- **6 GiB of free disk and 4 GiB of memory** for the build (it ends up using about
+  3 GiB of disk), plus about 1 GB for the Docker image (a 230 MB download).
 - **A Switch that already runs homebrew** in Application mode, with enough room on
   the card for about 1.1 GB. Preparing the console is not covered here.
 
-The build took 45 minutes on the 16-thread machine it was measured on, 25 of them in
-Ghidra, which uses up to 8 threads. You can leave it running.
+The build took 11 minutes on the 16-thread machine it was measured on. With fewer
+cores or less memory it runs fewer jobs at once and takes longer. You can leave it
+running.
 
 ## The executable
 
@@ -35,12 +37,12 @@ required, and this guide does not cover it: this project does not include, link 
 or describe any tool or method for it. Whether and how you do it is your decision
 and your responsibility under the law that applies to you. Please check that first.
 
-The file has to be exactly this one, because every address in the build belongs to
-it:
+The file has to be exactly the one for your version, because every address in the
+build belongs to it. For v1.9.7.19:
 
 ```sh
 sha256sum isaac-ng.unpacked.exe
-# b4743967f3d31050f7b4222e42ac6beae6a0b7850b1f1adaac07ef7b94d01ec8
+# 8c9526c1bf0910a930cba4037d120b357779940bbae34fabc8afaf56150e0b6a
 ```
 
 Name it however you like; the command below mounts it under the name the build
@@ -54,7 +56,7 @@ From the root of this repository, once:
 docker build -t isaac-switch-builder -f docker/Dockerfile .
 ```
 
-This took about 3 minutes on a fast connection, downloads several GB, and the image
+This takes a few minutes, downloads a few hundred MB, and the image
 contains nothing from the game. Then, with the paths changed to yours:
 
 ```sh
@@ -76,7 +78,7 @@ nothing leaves your machine. You will see nine steps:
 Checking your files (this reads the executable once)...
 Executable, game folder, disk and memory are fine.
 [1/9] Preparing the sources...
-[2/9] Analysing the executable with Ghidra (the long one)...
+[2/9] Listing the game's functions...
 ...
 Done in ...
 NRO sha256: ...
@@ -120,7 +122,9 @@ Everyone has to build their own.
 
 | What you see | What it means |
 | --- | --- |
-| `The executable is not the one this build needs` | The file's hash is different. A file from another game version cannot work, nor can one that differs in any other byte. |
+| `not a game version this builder knows` | The file's hash is not one in `versions/`. Another game version needs a newer builder; a file that differs in any byte cannot work. |
+| `no longer supports` | The executable is from an older version. Update the game in Steam and use the new executable. |
+| `still with its DRM` | That is Steam's own `isaac-ng.exe`. The build needs the executable without the DRM (above). |
 | `... is a folder, not a file` | The path in `EXE` does not exist, so Docker made an empty folder there. Fix the path and delete that folder. |
 | `does not look like the game's folder` | `GAME` has to be the folder containing `resources/` and `savedatapath.txt`. |
 | `The game folder is incomplete` | Let Steam verify the game's files, or check that all the expansions are installed. |
@@ -129,6 +133,6 @@ Everyone has to build their own.
 | The console says **NO GAME FILES** | The copy to the card is incomplete. The screen names what is missing. |
 | It returns to the launcher at once | Start it in Application mode. See [PLAYING.md](PLAYING.md#troubleshooting). |
 
-**If Steam has updated the game**, it may no longer match this build. The build is
-tied to v1.9.7.17 and has no way around that: it would have to be redone for the new
-version.
+**If Steam has updated the game**, the build says so in its first seconds and names
+the version it supports. Each version needs its addresses moved over once
+([versions/README.md](versions/README.md)); after that, a new builder supports it.

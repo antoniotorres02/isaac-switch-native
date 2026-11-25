@@ -4,7 +4,7 @@
      isaac_lazy_tex_materialize(name, lazy_upload);
      if (prev != name) glBindTexture(GL_TEXTURE_2D, prev);
  }
-+/* Theora cutscenes: theoraplayer's frame upload (0x00a62b10) writes every decoded
++/* Theora cutscenes: theoraplayer's frame upload (0x00a818a0) writes every decoded
 + * frame with glTexSubImage2D(GL_RGB, GL_UNSIGNED_BYTE) into a texture the engine
 + * made GL_RGBA. Desktop GL converts; GLES 3 (and WebGL 2) refuse a format that
 + * differs from the level's (GL_INVALID_OPERATION), so every video stayed black

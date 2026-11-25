@@ -1,0 +1,12 @@
+{
+  "version": "1.9.7.17",
+  "supported": false,
+  "steam": {
+    "buildid": "22878971",
+    "exe_sha256": "3BDFC8BAE0DC7E334B76009D0AD45DFBB16EE5F00C06FFBC3A0094E34D44616B"
+  },
+  "pe": {
+    "sha256": "B4743967F3D31050F7B4222E42AC6BEAE6A0B7850B1F1ADAAC07EF7B94D01EC8",
+    "size": 9176064
+  }
+}

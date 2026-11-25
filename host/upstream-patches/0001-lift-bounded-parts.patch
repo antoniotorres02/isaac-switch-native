@@ -1,0 +1,44 @@
+--- a/scripts/recomp/lift/lift_parallel.py
++++ b/scripts/recomp/lift/lift_parallel.py
+@@ -174,8 +174,14 @@
+     # balance by function count: largest buckets first, greedy onto the lightest job
+     order = sorted(buckets, key=lambda b: -len(buckets[b]))
+     jobs = max(1, min(jobs, len(order)))
+-    parts: list[list[int]] = [[] for _ in range(jobs)]
+-    load = [0] * jobs
++    # A worker's memory grows with every bucket it lifts (about half a GB each),
++    # so ISAAC_LIFT_BUCKETS_PER_PART cuts the work into more parts than jobs and
++    # runs at most `jobs` of them at once. Each part is lifted the same way, so
++    # the merged output does not depend on how the buckets were divided.
++    per_part = int(os.environ.get("ISAAC_LIFT_BUCKETS_PER_PART", "0") or 0)
++    nparts = max(jobs, -(-len(order) // per_part)) if per_part > 0 else jobs
++    parts: list[list[int]] = [[] for _ in range(nparts)]
++    load = [0] * nparts
+     for b in order:
+         j = load.index(min(load))
+         parts[j].append(b)
+@@ -199,6 +205,8 @@
+     # ---- phase 1: requested definitions only; global edges are deferred -----
+     procs = []
+     part_dirs = []
++    running = []
++    failed = 0
+     for j, blist in enumerate(parts):
+         if not blist:
+             continue
+@@ -214,11 +222,14 @@
+                "--starts-file", starts_path,
+                "--no-rescue", "--defer-closure",
+                "--va-file", vf, "--out", pdir, "--stats", os.path.join(pdir, "stats.json")]
++        while len(running) >= jobs:
++            failed += wait_all([running.pop(0)], out)
+         p, log = start_emit(cmd, os.path.join(pdir, "emit.log"))
+         procs.append(("worker %d" % j, p, log))
++        running.append(procs[-1])
+         part_dirs.append(pdir)
+     print("lift_parallel: %d starts in %d buckets over %d workers" % (len(starts), len(buckets), len(procs)))
+-    if wait_all(procs, out):
++    if wait_all(running, out) + failed:
+         return 1
+     t_phase1 = time.time() - t0
+ 

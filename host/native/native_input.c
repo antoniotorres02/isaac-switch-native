@@ -57,8 +57,8 @@ static int by_frame(const void *x, const void *y) {
     return (a->frame > b->frame) - (a->frame < b->frame);
 }
 
-/* The Game object (pointer at 0x00c71678) counts simulation ticks at
- * +0x264f8 -- the counter the web render gate paces on. Sampling it shows
+/* The Game object (pointer at 0x00c994f8) counts simulation ticks at
+ * +0x26508 (+0x264f8 before 1.9.7.19) -- the counter the web render gate paces on. Sampling it shows
  * whether presented frames are game updates or a paused/idle loop. */
 extern uint8_t *recomp_mem_base;
 static int g_last_sample = -1;
@@ -67,9 +67,9 @@ static void sample_tick(int frame) {
     if (frame % g_tick_every != 0 || frame == g_last_sample) return;
     g_last_sample = frame;
     uint32_t game;
-    memcpy(&game, recomp_mem_base + 0x00c71678u, 4);
+    memcpy(&game, recomp_mem_base + 0x00c994f8u, 4);
     uint32_t tick = 0;
-    if (game && game < ISAAC_GUEST_LIMIT_VA - 0x26500u) memcpy(&tick, recomp_mem_base + game + 0x264f8u, 4);
+    if (game && game < ISAAC_GUEST_LIMIT_VA - 0x26500u) memcpy(&tick, recomp_mem_base + game + 0x26508u, 4);
     fprintf(stderr, "[native] frame %d: game 0x%08x tick %u\n", frame, game, tick);
 }
 
@@ -119,8 +119,8 @@ int isaac_native_quit_requested(void) { return g_quit; }
 /* The Game object's tick counter, 0 before a run starts. */
 uint32_t isaac_native_game_tick(void) {
     uint32_t game, tick = 0;
-    memcpy(&game, recomp_mem_base + 0x00c71678u, 4);
-    if (game && game < ISAAC_GUEST_LIMIT_VA - 0x26500u) memcpy(&tick, recomp_mem_base + game + 0x264f8u, 4);
+    memcpy(&game, recomp_mem_base + 0x00c994f8u, 4);
+    if (game && game < ISAAC_GUEST_LIMIT_VA - 0x26500u) memcpy(&tick, recomp_mem_base + game + 0x26508u, 4);
     return tick;
 }
 

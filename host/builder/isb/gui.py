@@ -533,7 +533,7 @@ class App:
         ttk.Checkbutton(self.adv, text=t("page.options.steam"), variable=self.steam_var).pack(anchor="w")
         ttk.Label(self.adv, text=t("page.options.steam_warning"), style="Small.TLabel", wraplength=WRAP - 40,
                   justify="left").pack(anchor="w", padx=(22, 0))
-        for label, var in ((t("page.options.threads"), self.threads_var), (t("page.options.jobs"), self.jobs_var)):
+        for label, var in ((t("page.options.jobs"), self.jobs_var),):
             row = ttk.Frame(self.adv)
             ttk.Label(row, text=label).pack(side="left")
             ttk.Entry(row, textvariable=var, width=6).pack(side="left", padx=6)
@@ -612,7 +612,7 @@ class App:
                               image=dockerctl.image_ref(getattr(self.args, "image", None)),
                               game_exe=Path(self.exe_var.get()).resolve(), game=self.game.path.resolve(),
                               work=system.work_folder(base), export=system.export_folder(base),
-                              steam=self.steam_var.get(), threads=number(self.threads_var),
+                              steam=self.steam_var.get(),
                               jobs=number(self.jobs_var))
 
     def clean(self) -> None:

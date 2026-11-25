@@ -22,16 +22,14 @@ GAME="$HOME/.local/share/Steam/steamapps/common/The Binding of Isaac Rebirth"
 ## 1. Requirements
 
 - **The game**: your own purchased copy of The Binding of Isaac: Rebirth with
-  Repentance+, version **v1.9.7.17**, and its executable in the form described
-  in step 2. Every address used here is tied to that exact binary.
-- Python 3.12+ (pypcode 4.0.1 requires it), Node.js 20+, Git, GCC, Docker.
-- [Ghidra 12.1.2](https://github.com/NationalSecurityAgency/ghidra/releases)
-  (`ghidra_12.1.2_PUBLIC_20260605.zip`, SHA256
-  `b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d`) and the
-  JDK it requires (21).
-- [emsdk](https://github.com/emscripten-core/emsdk) with Emscripten 6.0.5:
-  upstream's pipeline builds its web module, and its outputs (patched lifted
-  units, memory image, file index) are what the native build consumes.
+  Repentance+, at a version listed as supported in [versions/](versions/README.md)
+  (today **v1.9.7.19**), and its executable in the form described in step 2.
+  Every address used here is tied to that exact binary.
+- Python 3.12+ (pypcode 4.0.1 requires it), Git, GCC, GNU patch, Docker.
+- Neither Ghidra nor Emscripten: the function list Ghidra finds is stored per
+  version in `versions/<version>/functions.txt`, and `upstream_steps.py` does
+  the part of upstream's web build the native one needs. Ghidra 12.1.2 is needed
+  only to add a new game version (versions/README.md).
 - PC build libraries (Debian/Ubuntu names): `libglfw3-dev libegl-dev
   libgles-dev libopenal-dev`.
 - Disk: the measured footprint was 2.0 GB for upstream's `output/`, 1.1 GB for
@@ -43,11 +41,10 @@ The pinned versions are also recorded in [upstream.json](upstream.json).
 ## 2. The executable
 
 The pipeline reads the game's executable as a plain Windows PE image, the same
-input the-browsing-of-isaac expects (`tools/isaac-ng.unpacked.exe`). The image
-this guide was measured with has SHA256
-`b4743967f3d31050f7b4222e42ac6beae6a0b7850b1f1adaac07ef7b94d01ec8` and the
-standard section names (`.text`, `.rdata`, `.data`, …). A different file will
-not work.
+input the-browsing-of-isaac expects (`tools/isaac-ng.unpacked.exe`). Its
+SHA256 has to be the `pe.sha256` of a supported version in `versions/` (for
+v1.9.7.19, `8c9526c1bf0910a930cba4037d120b357779940bbae34fabc8afaf56150e0b6a`).
+A different file will not work.
 
 **This project does not include, link to or describe any tool or method for
 removing the game's copy protection, and it contains no game code or data.**
@@ -55,7 +52,7 @@ Whether and how you obtain that image from your own copy is your decision and
 your responsibility under the law that applies to you; check it first.
 
 ```sh
-sha256sum /path/to/isaac-ng.unpacked.exe   # must print b4743967f3d3…
+sha256sum /path/to/isaac-ng.unpacked.exe   # v1.9.7.19: 8c9526c1bf09…
 ```
 
 ## 3. Upstream checkout
@@ -64,7 +61,7 @@ sha256sum /path/to/isaac-ng.unpacked.exe   # must print b4743967f3d3…
 git clone https://github.com/xreamm1/the-browsing-of-isaac "$U"
 git -C "$U" checkout 22be498c60aad2f8abcf010cd408422385fb58a3
 python3 -m venv "$V"
-"$V/bin/pip" install pypcode==4.0.1 capstone pefile psutil brotli zopfli pillow
+"$V/bin/pip" install pypcode==4.0.1 capstone pefile brotli pillow
 mkdir -p "$U/tools"
 cp /path/to/isaac-ng.unpacked.exe "$U/tools/isaac-ng.unpacked.exe"
 ```
@@ -72,13 +69,20 @@ cp /path/to/isaac-ng.unpacked.exe "$U/tools/isaac-ng.unpacked.exe"
 pypcode must be **4.0.1**, not the 3.3.3 upstream documents (see
 [DESIGN.md](DESIGN.md#corrections-to-the-upstream-pipeline)).
 
-Upstream's PE toolkit checks for the hash of their executable. Ours is
-structurally the same image, so change the expected hash locally:
+Apply the version's overlay: the changes upstream's scripts need for this
+executable, including the hash its PE toolkit expects:
 
 ```sh
-sed -i 's/^EXPECTED_SHA256 = "1FBA9A37BCEBF9276C9A80372E8C4DCAD59C8F652D2FD41727B396DCDCD6B89C"/EXPECTED_SHA256 = "B4743967F3D31050F7B4222E42AC6BEAE6A0B7850B1F1ADAAC07EF7B94D01EC8"/' \
-  "$U/scripts/decomp/tools/pe.py"
+for f in "$R"/host/upstream-patches/*.patch \
+         "$R/host/versions/1.9.7.19/upstream.patch"; do
+  patch -d "$U" -p1 < "$f" || break
+done
 ```
+
+The first ones apply to every version. `upstream-patches/0001` lets the lift
+cut its work into small parts (`ISAAC_LIFT_BUCKETS_PER_PART`), because a worker's
+memory grows with every part of the executable it lifts. One worker lifting
+everything reached 12.5 GB.
 
 Lua 5.3.3, extracted by hand (upstream's `lua_build.py` fails to extract it):
 
@@ -93,27 +97,30 @@ cd "$R"
 ## 4. Upstream pipeline
 
 All of this runs inside the upstream checkout with its virtual environment
-and emsdk on the `PATH`:
+on the `PATH`:
 
 ```sh
 cd "$U"
-export PATH="$V/bin:$PATH" GHIDRA_HOME="$HOME/Tools/ghidra_12.1.2_PUBLIC"
-source "$HOME/emsdk/emsdk_env.sh"
+export PATH="$V/bin:$PATH"
 ```
 
-**Ghidra export** of every function. It took about 27 minutes here with 8
-threads (analyze 11, recover 8, decompile 8). Do not pass `--max-functions`,
-which also caps the inventory.
+**Function list**, from the version folder (it is what Ghidra's export would
+give the steps below; see `functions_data.py`):
 
 ```sh
-node scripts/recomp/export-all.mjs --stage all --threads 8 --timeout 240 --heap 6G
+python "$R/host/functions_data.py" write \
+  "$R/host/versions/1.9.7.19" output/recomp/export
 ```
 
-**Host tables, memory image, shims and Lua**:
+(A maintainer adding a version runs the real Ghidra export instead, with
+Ghidra 12.1.2 and Node.js 20+: `node scripts/recomp/export-all.mjs --stage all
+--threads 8 --timeout 240 --heap 6G`, about 25 minutes.)
+
+**Host tables, memory image and shims**:
 
 ```sh
 for s in census/run_all.py host/boot_tables.py host/memimage.py \
-         host/verify_memimage.py host/gen_shims.py "host/lua_build.py --build"; do
+         host/verify_memimage.py host/gen_shims.py; do
   python scripts/recomp/$s || break
 done
 python scripts/decomp/tools/build-pe-index.py
@@ -137,11 +144,10 @@ cat output/recomp/lift/starts_union.orig.txt output/recomp/lift/extra_code_point
 wc -l output/recomp/lift/extra_code_pointer_starts.txt   # 519
 ```
 
-**Lift** (93 s here with 6 jobs; 38 units, 26,968 functions), keeping an
-untouched copy:
+**Lift** (93 s here with 6 jobs; 38 units, 26,968 functions):
 
 ```sh
-python scripts/recomp/lift/lift_parallel.py --jobs 6 \
+ISAAC_LIFT_BUCKETS_PER_PART=3 python scripts/recomp/lift/lift_parallel.py --jobs 6 \
   --exe tools/isaac-ng.unpacked.exe \
   --ghidra-functions output/recomp/export/functions.jsonl \
   --fragments-tsv output/recomp/export/recovered-functions.tsv \
@@ -154,20 +160,20 @@ python scripts/recomp/lift/lift_parallel.py --jobs 6 \
   --stats output/recomp/lift/gu/stats.json
 python scripts/recomp/lift/patch_reentry.py --dir output/recomp/lift/gu \
   --exe tools/isaac-ng.unpacked.exe
-cp -a output/recomp/lift/gu output/recomp/lift/gu.pristine
 ```
 
-**Patched units and web module**. `build_boot.py` rewrites `gu/` in place;
-`ISAAC_CALL_SLIM=0` keeps the EIP spills that exception and `longjmp`
-resumption need. If you ever run it again, restore `gu/` from
-`gu.pristine/` first.
+**Patched units**. `upstream_steps.py patch` runs the first half of upstream's
+`build_boot.py` (its source patches, `check_lifted.py`, `mkstubs.py`,
+`mkdispatch.py`) without the WebAssembly compile, with `ISAAC_CALL_SLIM=0`,
+which keeps the EIP spills that exception and `longjmp` resumption need. It
+rewrites `gu/` in place: to run it again, lift again first.
 
 ```sh
-ISAAC_CALL_SLIM=0 python scripts/recomp/lift/build_boot.py --web --fast --jobs 4
+python "$R/host/upstream_steps.py" patch .
 ```
 
 This leaves the patched lifted units, `dispatch_tbl.c` and `stubs.c` in
-`output/recomp/lift/gu` and the memory image in
+`output/recomp/lift/gu`; the memory image is in
 `output/recomp/host/isaac.segs.bin`.
 
 **Game bundle and file index**. The bundle hard-links the Steam files. The
@@ -176,12 +182,12 @@ your Steam install too; break the links into copies if you plan to touch it.
 
 ```sh
 python scripts/recomp/assets/bundle.py build "$GAME" .scratch/game-bundle
-python scripts/recomp/assets/ship.py build
+python "$R/host/upstream_steps.py" index .
 cd "$R"
 ```
 
-`ship.py` writes `.scratch/game-dist/instance_index.json`, the list of game
-files the Switch build embeds.
+`upstream_steps.py index` writes `.scratch/game-dist/instance_index.json` the
+way upstream's `ship.py` does: the list of game files the Switch build embeds.
 
 ## 5. Native PC build
 
@@ -207,12 +213,15 @@ A quick headless check that boots to the starting room (build the `release`
 profile first):
 
 ```sh
-ISAAC_MAX_FRAMES=1500 build/browsing-native/release/isaac_native \
+IN=$(python3 -c "print(''.join('%d:enter,' % f for f in range(120, 841, 40)))")
+ISAAC_INPUT="$IN" ISAAC_MAX_FRAMES=2000 ISAAC_NATIVE_AUDIO=0 ALSOFT_DRIVERS=null \
+  build/browsing-native/release/isaac_native \
   "$U/output/recomp/host/isaac.segs.bin" "$U/.scratch/game-bundle" main
 ```
 
-The log should reach `Room 1.2(Start Room)` and show the game tick
-advancing. To play on PC, see [PLAYING.md](PLAYING.md#playing-on-pc).
+The scripted Enter presses start a run. The log should then reach
+`Room 1.2(Start Room)` and show the game tick advancing. Without them it stays
+in the menus with `tick 0`. To play on PC, see [PLAYING.md](PLAYING.md#playing-on-pc).
 
 ## 6. Switch NRO
 

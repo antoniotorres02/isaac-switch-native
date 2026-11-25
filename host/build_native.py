@@ -89,14 +89,16 @@ COMMON = ["-fno-strict-aliasing", "-fwrapv", "-DRECOMP_MEM_IDENTITY=0",
 
 # Host hooks inside the lifted code: (file, anchor, call). The anchor is the
 # lifted instruction marker the call goes after; it must occur exactly once.
-#   0x40ee80, in the .anm2 loader (sub_0040ed50): the XML text pointer for
-#   rapidxml's parse (call at 0x40ee8a) has just been pushed, so [ESP] is it;
+# file None: whichever lifted_*.c holds the anchor (the split moves between
+# game versions).
+#   0x410043 (0x40ee80 in 1.9.7.17), in the .anm2 loader: the XML text pointer
+#   for rapidxml's parse (call at 0x41004d) has just been pushed, so [ESP] is it;
 #   native_glyphs.c may hand the parser a rewritten copy.
-#   0xa178d0, the engine's stream open (the upstream probe wrapper): the path
+#   0xa30e30 (0xa178d0 in 1.9.7.17), the engine's stream open (the upstream probe wrapper): the path
 #   is at [ESP+4]; native_stream_path.c collapses a doubled '/' in it.
 LIFT_HOOKS = [
-    ("lifted_000.c", "  RECOMP_VA(0x40ee80u);\n", "  isaac_hook_anm2_text(ESP);\n"),
-    ("lifted_032.c", "  if (on) isaac_probe_str(0xa178d0u, \"stream open\", MEMR32(s->ESP + 4u));\n",
+    (None, "  RECOMP_VA(0x410043u);\n", "  isaac_hook_anm2_text(ESP);\n"),
+    (None, "  if (on) isaac_probe_str(0xa30e30u, \"stream open\", MEMR32(s->ESP + 4u));\n",
      "  isaac_hook_stream_path(s->ESP);\n"),
 ]
 HOOK_DECLS = ("#include <stdint.h>\nvoid isaac_hook_anm2_text(uint32_t esp);\n"
@@ -125,11 +127,18 @@ def hooked_lift_sources(gu: Path, out: Path) -> dict:
     dst_dir = out / "lift-hooked"
     dst_dir.mkdir(parents=True, exist_ok=True)
     by_file = {}
+    hooks = []
     for name, anchor, call in LIFT_HOOKS:
+        if name is None:
+            found = [p.name for p in sorted(gu.glob("lifted_*.c")) if anchor in p.read_text()]
+            if len(found) != 1:
+                sys.exit("lift hook: anchor %r found in %d lifted files" % (anchor.strip(), len(found)))
+            name = found[0]
+        hooks.append(name)
         by_file.setdefault(name, []).append((anchor, anchor + call))
     for name, old, new in LIFT_EDITS:
         by_file.setdefault(name, []).append((old, new))
-    hooked = {name for name, _, _ in LIFT_HOOKS}
+    hooked = set(hooks)
     result = {}
     for name, edits in by_file.items():
         text = (gu / name).read_text()
@@ -279,6 +288,8 @@ def main() -> int:
             return "/work/" + str(p.resolve().relative_to(REPO))
         if args.out != DEFAULT_OUT:
             cmd += ["--out", in_work(args.out)]
+        if args.upstream.resolve() != DEFAULT_UPSTREAM.resolve():
+            cmd += ["--upstream", in_work(args.upstream)]
         if args.extra_patches:
             cmd += ["--extra-patches", in_work(args.extra_patches)]
         if args.lift_opt:

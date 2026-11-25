@@ -406,7 +406,7 @@ static void draw_background(void) {
     text(48, 218, "The Binding of Isaac", 60, BOLD, 0xf3ece4);
     text_ex(51, 264, "REPENTANCE+", 26, BOLD, 6, 0x000000, 140);
     text_ex(50, 262, "REPENTANCE+", 26, BOLD, 6, 0xe2b464, 255);
-    text_ex(50, 293, "Native port for Nintendo Switch \xc2\xb7 v1.9.7.17", 15, REG, 0, 0xb9aea4, 255);
+    text_ex(50, 293, "Native port for Nintendo Switch \xc2\xb7 v1.9.7.19", 15, REG, 0, 0xb9aea4, 255);
     /* the bars */
     for (int y = 0; y < 52; ++y)
         for (int x = 0; x < W; ++x) blend(x, y, C_NAV, y < 48 ? 235 : 255 - (y - 48) * 50);
@@ -577,12 +577,14 @@ static void panel(int x, int y, int w, int h, const char *title) {
 }
 
 #ifdef ISAAC_NO_STEAM
+const char *isaac_switch_game_files_label(void);   /* native_switch.c */
+
 /* A build without Steam (build_native.py --no-steam): only the files to report. */
 static void draw_files_panel(const isaac_launcher_view *v) {
     const int x = 40, y = BAR_TOP + BAR_H + 20, w = W - 80, h = FOOT_TOP - y - 12;
     panel(x, y, w, h, "ON THIS CONSOLE");
     text(x + 20, y + 76, "Game files", 16, BOLD, C_TEXT);
-    text(x + 150, y + 76, "sdmc:/switch/isaac-recomp/guest", 15, REG, C_TEXT2);
+    text(x + 150, y + 76, isaac_switch_game_files_label(), 15, REG, C_TEXT2);
     text(x + 20, y + 108, "Saves", 16, BOLD, C_TEXT);
     text(x + 150, y + 108, "sdmc:/switch/isaac-recomp/saves", 15, REG, C_TEXT2);
     text(x + 20, y + 140, "This build keeps everything on the SD card and does not use the network.", 14, REG, C_DIM);

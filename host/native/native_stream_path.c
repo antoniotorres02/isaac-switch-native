@@ -3,7 +3,7 @@
  * The engine names a mod's metadata "<mod folder>/" + "/metadata.xml". On
  * Windows the doubled separator reads as one, and the PC mod folder is an
  * absolute path anyway (z:\...\mods/<mod>/ in a Steam log). Here it is the
- * engine root, "//mods/<mod>/", which the engine's stream open (0xa178d0)
+ * engine root, "//mods/<mod>/", which the engine's stream open (0xa30e30; 0xa178d0 in 1.9.7.17)
  * looks up among the files it listed at start; ".../<mod>//metadata.xml" is
  * not among them. Every mod then had no metadata: its <name> became the
  * folder, so mods ran in folder order instead of name order (Mod Config Menu,
