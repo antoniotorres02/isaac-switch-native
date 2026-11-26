@@ -5,6 +5,7 @@ local mode = greedier and Difficulty.DIFFICULTY_GREEDIER or Difficulty.DIFFICULT
 local final_wave = greedier and 12 or 11
 local should_use = BENCH_SCENARIO:match("use$") ~= nil
 local ticks, defeated = 0, 0
+local last_wave = -1
 local started, finished, used = false, false, false
 
 local function log(message)
@@ -16,6 +17,7 @@ test:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, function()
     local should_equip = BENCH_SCENARIO ~= "control"
     if should_equip then player:AddCollectible(item, 6, true) end
     started = Game().Difficulty == mode and player:HasCollectible(item) == should_equip
+    log("started difficulty " .. Game().Difficulty .. ", equipped " .. tostring(player:HasCollectible(item)))
     if not started then log("incorrect difficulty or active item") end
 end)
 
@@ -31,6 +33,10 @@ test:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     local room = game:GetRoom()
     local player = Isaac.GetPlayer(0)
     local wave = game:GetLevel().GreedModeWave
+    if wave ~= last_wave then
+        log("wave " .. tostring(wave))
+        last_wave = wave
+    end
 
     -- Walk on and off the button to trigger the optional waves too.
     if ticks == 50 or (wave >= 8 and ticks % 90 == 10) then

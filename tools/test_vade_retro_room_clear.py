@@ -10,9 +10,10 @@ import tempfile
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "vade_retro_room_clear"
 # Confirm the startup screens, move from Normal to Greed, then start the run.
-GREED_INPUT = "120:enter,160:enter,200:enter,240:enter,340:down,365:down,405:enter"
+CONFIRM = "405:enter,445:enter,485:enter,525:enter"
+GREED_INPUT = "120:enter,160:enter,200:enter,240:enter,340:down,365:down," + CONFIRM
 # A save from the Greed control run starts with Greed selected.
-GREEDIER_INPUT = "120:enter,160:enter,200:enter,240:enter,340:down,405:enter"
+GREEDIER_INPUT = "120:enter,160:enter,200:enter,240:enter,340:down," + CONFIRM
 PERSISTENT = Path("documents/my games/binding of isaac repentance+/persistentgamedata1.dat")
 
 
