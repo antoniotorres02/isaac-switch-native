@@ -1197,6 +1197,7 @@ static int launcher_run(void) {
     }
     framebufferMakeLinear(&fb);
     isaac_launcher_load_art("romfs:/launcher", ROOT "/ui");
+    int about_open = 0;
 #ifdef ISAAC_NO_STEAM
     stage("launcher: shown (built without Steam)");
     g_ln.phase = ISAAC_LAUNCHER_OFF;
@@ -1207,7 +1208,11 @@ static int launcher_run(void) {
         if (choice < 0 && !appletMainLoop()) choice = 0;
         padUpdate(&g_pad);
         u64 down = choice < 0 ? padGetButtonsDown(&g_pad) : 0;
-        if (down & HidNpadButton_B) {
+        if (about_open) {
+            if (down & (HidNpadButton_B | HidNpadButton_Plus)) about_open = 0;
+        } else if (down & HidNpadButton_Plus) {
+            about_open = 1;
+        } else if (down & HidNpadButton_B) {
             choice = 0;
         } else if ((down & HidNpadButton_A) && g_ln.files != ISAAC_FILES_BAD) {
             choice = 1;
@@ -1215,6 +1220,7 @@ static int launcher_run(void) {
         }
         g_ln.t = armTicksToNs(armGetSystemTick() - t0) / 1e9f;
         view = g_ln;
+        view.about_open = choice < 0 && about_open;
         u32 stride;
         uint32_t *px = framebufferBegin(&fb, &stride);
         isaac_launcher_draw(px, (int)(stride / 4), &view);
@@ -1290,6 +1296,10 @@ static int launcher_run(void) {
                 g_ln_answer = g_ln.conflict_choice;
                 pthread_cond_broadcast(&g_ln_cond);
             }
+        } else if (about_open && choice < 0) {
+            if (down & (HidNpadButton_B | HidNpadButton_Plus)) about_open = 0;
+        } else if (down & HidNpadButton_Plus) {
+            about_open = 1;
         } else if (down & HidNpadButton_B) {
             choice = 0;
         } else if ((down & HidNpadButton_A) && g_ln.phase != ISAAC_LAUNCHER_SYNCING &&
@@ -1317,6 +1327,7 @@ static int launcher_run(void) {
         }
         g_ln.t = armTicksToNs(armGetSystemTick() - t0) / 1e9f;
         view = g_ln;
+        view.about_open = choice < 0 && about_open;
         pthread_mutex_unlock(&g_ln_lock);
         u32 stride;
         uint32_t *px = framebufferBegin(&fb, &stride);

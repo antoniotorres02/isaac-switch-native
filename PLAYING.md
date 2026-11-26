@@ -53,7 +53,8 @@ The NRO contains the memory image of your executable. Do not share it.
 ## Launcher artwork and controls
 
 Press **A** to play and **B** to exit the launcher. **Minus** opens Steam
-sign-in or sign-out. If a Cloud sync fails, **ZR** retries it.
+sign-in or sign-out. If a Cloud sync fails, **ZR** retries it. Press **Plus**
+for the project credits and repository address.
 
 The title logo and icon come from your game files. The builder uses the
 official Steam library banner when it is available. You can supply the image

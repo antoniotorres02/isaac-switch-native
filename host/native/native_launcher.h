@@ -86,6 +86,7 @@ typedef struct {
     int files;                          /* ISAAC_FILES_* */
     char files_summary[32];             /* "22 of 22 found", "4 missing" */
     char files_detail[192];             /* which ones, and what to do */
+    int about_open;
     float t;                            /* seconds, for the animations */
 } isaac_launcher_view;
 

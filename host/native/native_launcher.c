@@ -792,6 +792,7 @@ static void draw_footer(const isaac_launcher_view *v) {
     int x = W - 40;
     struct { const char *key, *what; int on; } hints[] = {
         { "B", "Exit", 1 },
+        { "+", "About", 1 },
 #ifndef ISAAC_NO_STEAM
         { "−", v->account_action == ISAAC_ACCOUNT_SIGN_IN ? "Sign In" : "Sign Out",
           v->account_action != ISAAC_ACCOUNT_NONE },
@@ -817,6 +818,21 @@ static void draw_footer(const isaac_launcher_view *v) {
         fit(activity, sizeof activity, v->activity, 13, REG, x - 40);
         text(40, cy + 5, activity, 13, REG, C_DIM);
     }
+}
+
+static void draw_about(void) {
+    int x = 324, y = 174, w = 632, h = 372;
+    rect(0, 0, W, H, 0, 174);
+    rrect_grad(x, y, w, h, 8, C_PAGE_TOP, C_PAGE_BOT, 1, 255);
+    rrect_line(x, y, w, h, 8, 1, C_ACCENT, 180);
+    text(x + 30, y + 53, "isaac-switch-native", 32, BOLD, C_TEXT);
+    text(x + 30, y + 91, "The Binding of Isaac: Repentance+", 19, REG, C_TEXT2);
+    text(x + 30, y + 144, "Switch port by Antonio Torres and Don Claudio", 18, REG, C_TEXT);
+    text(x + 30, y + 176, "Built on the browsing-of-isaac recompiler", 18, REG, C_TEXT);
+    text(x + 30, y + 208, "Switch Button Icons by Gioele Casazza (CC BY 4.0)", 18, REG, C_TEXT);
+    text(x + 30, y + 264, "github.com/antoniotorres02/isaac-switch-native", 17, REG, C_ACCENT);
+    rect(x + 30, y + h - 63, w - 60, 1, 0x3a4b5e, 180);
+    controller_hint(x + w - 32, y + h - 33, "B", "+", "Go Back");
 }
 
 #ifndef ISAAC_NO_STEAM
@@ -980,6 +996,7 @@ void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view
     else if (v->signin != ISAAC_SIGNIN_NONE) draw_signin(v);
     else if (v->signout != ISAAC_SIGNOUT_NONE) draw_signout(v);
 #endif
+    if (v->about_open) draw_about();
 }
 
 /* ---- the in-game Steam Cloud panel -------------------------------------------- */

@@ -109,6 +109,8 @@ static int states(const char *dir) {
     base(&v);
     v.phase = ISAAC_LAUNCHER_LAUNCHING;
     bad |= save(dir, "nosteam-3-launching", &v);
+    v.about_open = 1;
+    bad |= save(dir, "nosteam-5-about", &v);
     return bad;
 }
 #endif
@@ -262,6 +264,10 @@ int main(int argc, char **argv) {
     memcpy(v.slot, slots, sizeof slots);
     BAD_FILES(v);
     bad |= save(argv[2], "17-files-missing", &v);
+
+    v.about_open = 1;
+    bad |= save(argv[2], "19-about", &v);
+    v.about_open = 0;
 
     /* The Switch frees launcher resources before initializing the in-game panel. */
     isaac_launcher_release();
