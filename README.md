@@ -41,9 +41,7 @@ Download it from the [latest release](https://github.com/antoniotorres02/isaac-s
 > this repository removes it or explains how. Whether and how you do it is your
 > decision and your responsibility under the law that applies to you.
 
-The Builder can prepare the HOME Menu installer, the direct-launch NRO, or
-both in one SD card folder. The same build with one Docker command is in
-[GUIDE.md](GUIDE.md).
+The same build with one Docker command is in [GUIDE.md](GUIDE.md).
 
 ## Documentation
 
