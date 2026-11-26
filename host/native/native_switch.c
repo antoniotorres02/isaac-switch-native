@@ -865,7 +865,9 @@ static void signin_run(void) {
             g_ln.signin = ISAAC_SIGNIN_NONE;
             g_ln_has_token = 1;
             g_ln_token_bad = 0;
-            g_ln_start_pull = 1;
+            snprintf(g_ln.account, sizeof g_ln.account, "Steam · …%07llu",
+                     (unsigned long long)(result.steamid % 10000000u));
+            g_ln_start_pull = g_steam_sync;
             pthread_mutex_unlock(&g_ln_lock);
             return;
         }
@@ -1229,6 +1231,8 @@ static int launcher_run(void) {
     struct stat token_st;
     g_ln_has_token = stat(TOKEN_PATH, &token_st) == 0;
     g_ln_token_bad = 0;
+    int workshop_open = 0;
+    PadRepeater workshop_scroll;
     if (g_steam_sync && !g_ln_has_token) {
         ln_reset(ISAAC_LAUNCHER_SIGNED_OUT);
         ln_error(SIGNED_OUT_TEXT);
@@ -1237,6 +1241,7 @@ static int launcher_run(void) {
         joinable = sync_thread_start(&thread) == 0;
     } else {
         ln_reset(ISAAC_LAUNCHER_OFF);
+        if (g_ln_has_token) snprintf(g_ln.account, sizeof g_ln.account, "Steam session saved");
         ln_error("Steam Cloud sync is off (steam_sync=0 in settings.ini): your saves stay on this console.");
     }
 
@@ -1253,8 +1258,22 @@ static int launcher_run(void) {
                    g_ln.phase != ISAAC_LAUNCHER_LAUNCHING && choice < 0;
         g_ln.account_action = !idle ? ISAAC_ACCOUNT_NONE
                               : g_ln_has_token && !g_ln_token_bad ? ISAAC_ACCOUNT_SIGN_OUT
-                              : g_steam_sync ? ISAAC_ACCOUNT_SIGN_IN : ISAAC_ACCOUNT_NONE;
-        if (g_ln_start_pull && !g_ln_busy && choice < 0) {
+                              : ISAAC_ACCOUNT_SIGN_IN;
+        g_ln.workshop_available = idle;
+        if (workshop_open && choice < 0) {
+            pthread_mutex_unlock(&g_ln_lock);
+            padRepeaterUpdate(&workshop_scroll, padGetButtons(&g_pad) &
+                              (HidNpadButton_AnyUp | HidNpadButton_AnyDown |
+                               HidNpadButton_AnyLeft | HidNpadButton_AnyRight));
+            if (!down) down = padRepeaterGetButtons(&workshop_scroll);
+            int action = workshop_browser_input(down, g_ln_has_token && !g_ln_token_bad);
+            if (action) {
+                workshop_browser_close();
+                workshop_open = 0;
+                if (action == WORKSHOP_SIGNIN) signin_open(&thread, &joinable);
+            }
+            pthread_mutex_lock(&g_ln_lock);
+        } else if (g_ln_start_pull && !g_ln_busy && choice < 0) {
             g_ln_start_pull = 0;
             pthread_mutex_unlock(&g_ln_lock);
             if (joinable) pthread_join(thread, NULL);
@@ -1303,6 +1322,13 @@ static int launcher_run(void) {
             stage("launcher: retry");
             joinable = sync_thread_start(&thread) == 0;
             pthread_mutex_lock(&g_ln_lock);
+        } else if ((down & HidNpadButton_R) && idle) {
+            pthread_mutex_unlock(&g_ln_lock);
+            if (joinable) { pthread_join(thread, NULL); joinable = 0; }
+            workshop_open = workshop_browser_open(ROOT, ROOT "/saves", TOKEN_PATH, g_installed) == 0;
+            padRepeaterInitialize(&workshop_scroll, 8, 2);
+            if (!workshop_open) workshop_browser_close();
+            pthread_mutex_lock(&g_ln_lock);
         } else if ((down & HidNpadButton_X) && g_ln.account_action == ISAAC_ACCOUNT_SIGN_OUT) {
             g_ln.signout = ISAAC_SIGNOUT_ASK;
         } else if ((down & HidNpadButton_X) && g_ln.account_action == ISAAC_ACCOUNT_SIGN_IN) {
@@ -1317,6 +1343,7 @@ static int launcher_run(void) {
             pthread_cond_broadcast(&g_ln_cond);
         }
         g_ln.t = armTicksToNs(armGetSystemTick() - t0) / 1e9f;
+        g_ln.workshop = workshop_open && choice < 0 ? workshop_browser_view() : NULL;
         view = g_ln;
         pthread_mutex_unlock(&g_ln_lock);
         u32 stride;
@@ -1325,6 +1352,8 @@ static int launcher_run(void) {
         framebufferEnd(&fb);
         if (choice >= 0) ++last_frames;   /* Launching / Exiting stays up a moment */
     }
+    if (workshop_open) workshop_browser_close();
+    g_ln.workshop = NULL;
     /* Leaving mid-sync waits for the thread: it ends within the network timeout. */
     if (joinable) pthread_join(thread, NULL);
     g_ln_on = 0;
@@ -1647,6 +1676,13 @@ int main(int argc, char **argv) {
             if (shown < 0) steam_sync_run(0);
             else play = shown;
         }
+#ifndef ISAAC_NO_STEAM
+        if (play && !automatic) {
+            mod_store workshop;
+            if (mod_store_init(&workshop, ROOT, ROOT "/saves", g_installed) == 0 && mod_recover(&workshop))
+                stage("Workshop: SD recovery incomplete");
+        }
+#endif
         if (!play) {
             status = "EXIT";
         } else {

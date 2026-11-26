@@ -79,6 +79,7 @@ static int get_varint(isaac_pbr *r, uint64_t *out) {
     int shift = 0;
     while (r->p < r->end && shift <= 63) {
         uint8_t b = *r->p++;
+        if (shift == 63 && b > 1) return -1;
         v |= (uint64_t)(b & 0x7f) << shift;
         if (!(b & 0x80)) {
             *out = v;
@@ -93,6 +94,7 @@ int isaac_pbr_next(isaac_pbr *r, isaac_pbfield *f) {
     if (r->p >= r->end) return 0;
     uint64_t key;
     if (get_varint(r, &key) != 0) return -1;
+    if (key < 8 || key > UINT32_MAX) return -1;
     f->field = (unsigned)(key >> 3);
     f->wire = (unsigned)(key & 7);
     f->value = 0;

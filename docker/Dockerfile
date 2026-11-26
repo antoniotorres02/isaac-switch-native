@@ -35,7 +35,7 @@ RUN set -eu; \
     if [ -d "$src/portlibs/switch/licenses" ]; then cp -a "$src/portlibs/switch/licenses" "$dst/portlibs/switch/"; fi; \
     cp -a "$src/portlibs/switch/lib/pkgconfig" "$src/portlibs/switch/lib/cmake" "$dst/portlibs/switch/lib/"; \
     cd "$src/portlibs/switch/lib"; \
-    for lib in openal SDL2 SDL2main EGL GLESv2 glapi drm_nouveau freetype harfbuzz png16 png bz2 z; do \
+    for lib in openal SDL2 SDL2main EGL GLESv2 glapi drm_nouveau freetype harfbuzz png16 png bz2 z jpeg lzma zstd; do \
         found=0; \
         for f in "lib$lib.a" "lib$lib.la"; do \
             if [ -e "$f" ] || [ -L "$f" ]; then cp -a "$f" "$dst/portlibs/switch/lib/"; found=1; fi; \

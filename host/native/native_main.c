@@ -10,6 +10,7 @@
  * through 1 MiB windows. The run's frame budget comes from the host's own
  * ISAAC_MAX_FRAMES / ISAAC_EXIT_AFTER. */
 #define _GNU_SOURCE
+#include "native_modstate.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -297,26 +298,9 @@ static int mod_toggle_folder(const char *key, char *folder, size_t cap) {
     }
     return 0;
 }
-static int mod_state(const char *folder) {        /* -1 none, 0 off, 1 on */
-    if (!g_save_dir[0]) return -1;
-    char p[PATH_MAX + 300];
-    struct stat st;
-    snprintf(p, sizeof p, "%s/mod-state/%s.off", g_save_dir, folder);
-    if (stat(p, &st) == 0) return 0;
-    snprintf(p, sizeof p, "%s/mod-state/%s.on", g_save_dir, folder);
-    if (stat(p, &st) == 0) return 1;
-    return -1;
-}
 static void mod_state_set(const char *folder, int on) {
-    char dir[PATH_MAX + 20], p[PATH_MAX + 300];
-    snprintf(dir, sizeof dir, "%s/mod-state", g_save_dir);
-    mkdir(dir, 0755);
-    snprintf(p, sizeof p, "%s/%s.%s", dir, folder, on ? "off" : "on");
-    remove(p);
-    snprintf(p, sizeof p, "%s/%s.%s", dir, folder, on ? "on" : "off");
-    FILE *f = fopen(p, "wb");
-    if (f) fclose(f);
-    printf("[native] mods menu: '%s' turned %s (applies at the next start)\n", folder, on ? "on" : "off");
+    if (isaac_modstate_set(g_save_dir, folder, on) == 0)
+        printf("[native] mods menu: '%s' turned %s (applies at the next start)\n", folder, on ? "on" : "off");
 }
 
 /* ISAAC_NATIVE_MODS_DIR: where the mods are when they are not the
@@ -336,7 +320,7 @@ static void seed_mods(void) {
         if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
         snprintf(off, sizeof off, "%s/disable.it", dir);
         int on = stat(off, &st) != 0;
-        int chosen = mod_state(e->d_name);
+        int chosen = isaac_modstate_get(g_save_dir, e->d_name);
         if (chosen >= 0) on = chosen;
         if (!on) {
             /* Listed, greyed and empty: its metadata and a disable.it, so the

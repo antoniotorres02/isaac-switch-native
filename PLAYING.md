@@ -232,6 +232,13 @@ straight away, with no screen, and then only a token copied from a PC signs in).
 measured, what is not tested yet, and the risks of using an unofficial Steam
 client with your account.
 
+## Steam Workshop
+
+Press **R** on the launcher in a Steam-enabled build. Browse and install
+mods to the Switch, or review your subscriptions using the **Sync** tab.
+Subscription synchronization starts when you request and confirm it.
+See [Steam Workshop](STEAM-WORKSHOP.md) for the controls and testing setup.
+
 ## Mods
 
 Mods from the Steam Workshop work, including Lua mods. They were tested with
