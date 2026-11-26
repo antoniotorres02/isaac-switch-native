@@ -192,6 +192,27 @@ game uses `lua_getextraspace(L) == L - 4`). `luaL_loadfilex` reads from the
 RAM-FS first (`native_lua_ramfs.c`; the original stays as
 `luaL_loadfilex_disk`), so `dofile`/`loadfile` from mods find their files.
 
+### Vade Retro room-clear regression
+
+The v1.9.7.17 lift could abort at the first Greed room clear with Vade Retro
+equipped. The call at `0x005d7928` reached the weak stub for `sub_005cd670`,
+a byte getter left out of that version's inventory. IsaacNX+ supplied the
+getter as a native fallback in its v1.9.7.17 build. The current build uses
+the v1.9.7.19 executable and its own lift inventory. [Issue #1](https://github.com/antoniotorres02/isaac-switch-native/issues/1)
+
+After building the Linux GLES executable, use this smoke test to run Greed
+with no item, with Vade Retro equipped, and with the item actively used.
+`--greedier` also runs the equipped and active-use cases in Greedier. It uses
+Node.js on the host and the upstream save helper to unlock Greedier in a
+temporary profile. The test checks the selected difficulty and waits for
+the final room clear. Greedier on Switch still needs a hardware retest.
+
+```sh
+python3 tools/test_vade_retro_room_clear.py \
+  --exe build/browsing-native/gl/isaac_native \
+  --upstream build/browsing-port/repo --greedier
+```
+
 ### Corrections to the upstream pipeline
 
 These are needed with our executable and are part of [BUILDING.md](BUILDING.md):
