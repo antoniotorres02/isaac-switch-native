@@ -1,0 +1,28 @@
+--- a/scripts/recomp/host/src/host_gl_webgl.c
++++ b/scripts/recomp/host/src/host_gl_webgl.c
+@@ -63,2 +63,5 @@
+ #include <stdlib.h>
++#if defined(__SWITCH__) && defined(__ARM_NEON)
++#include <arm_neon.h>
++#endif
+ #include <string.h>
+@@ -399,7 +402,18 @@
+     for (uint32_t y = 0; y < h; ++y) {
+         const uint8_t *s = px + (size_t)y * src_row;
+         uint8_t *d = g_widen_buf + (size_t)y * w * 4u;
+-        for (uint32_t x = 0; x < w; ++x, s += 3, d += 4) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = 0xFFu; }
++        uint32_t x = 0;
++#if defined(__SWITCH__) && defined(__ARM_NEON)
++        const uint8x16_t opaque = vdupq_n_u8(255);
++        for (; w - x >= 16; x += 16, s += 48, d += 64) {
++            uint8x16x3_t rgb = vld3q_u8(s);
++            uint8x16x4_t rgba = {{rgb.val[0], rgb.val[1], rgb.val[2], opaque}};
++            vst4q_u8(d, rgba);
++        }
++#endif
++        for (; x < w; ++x, s += 3, d += 4) {
++            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = 0xFFu;
++        }
+     }
+     if (++g_tex_widened == 1u)
+         isaac_log("[isaac][gl] texture %u: RGB %ux%u into its RGBA level, widened to RGBA (GLES refuses the mismatch)", name, w, h);

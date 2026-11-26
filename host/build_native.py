@@ -97,12 +97,17 @@ COMMON = ["-fno-strict-aliasing", "-fwrapv", "-DRECOMP_MEM_IDENTITY=0",
 #   0xa30e30 (0xa178d0 in 1.9.7.17), the engine's stream open (the upstream probe wrapper): the path
 #   is at [ESP+4]; native_stream_path.c collapses a doubled '/' in it.
 LIFT_HOOKS = [
+    # Skip recording the reflection geometry after the room selects mode 5.
+    # The shared submission and framebuffer cleanup still run.
+    (None, "  RECOMP_VA(0x82a0a7u);\n",
+     "  if (isaac_native_skip_water_reflection()) goto L_0082a200;\n"),
     (None, "  RECOMP_VA(0x410043u);\n", "  isaac_hook_anm2_text(ESP);\n"),
     (None, "  if (on) isaac_probe_str(0xa30e30u, \"stream open\", MEMR32(s->ESP + 4u));\n",
      "  isaac_hook_stream_path(s->ESP);\n"),
 ]
 HOOK_DECLS = ("#include <stdint.h>\nvoid isaac_hook_anm2_text(uint32_t esp);\n"
-              "void isaac_hook_stream_path(uint32_t esp);\n")
+              "void isaac_hook_stream_path(uint32_t esp);\n"
+              "int isaac_native_skip_water_reflection(void);\n")
 
 # Replacements in the generated files: (file, old, new); old must occur once.
 #   dispatch_tbl.c, the cache hit of every indirect call: the per-entry census

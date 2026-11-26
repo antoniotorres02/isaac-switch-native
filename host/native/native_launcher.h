@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "native_options.h"
 #include "native_qr.h"
 #include "native_steamsync.h"
 
@@ -83,6 +84,8 @@ typedef struct {
     int qr_size;                        /* modules per side */
     uint8_t qr[ISAAC_QR_MAX_SIZE * ISAAC_QR_MAX_SIZE];
     int signout;                        /* ISAAC_SIGNOUT_* */
+    const isaac_options_menu *options;
+    int options_available;
     int files;                          /* ISAAC_FILES_* */
     char files_summary[32];             /* "22 of 22 found", "4 missing" */
     char files_detail[192];             /* which ones, and what to do */

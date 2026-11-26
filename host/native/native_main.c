@@ -1,3 +1,4 @@
+#include "native_options.h"
 /* Native driver for the browsing-of-isaac lift: the C counterpart of
  * scripts/recomp/lift/boot_integration.mjs (node profile) and play.mjs's
  * seeding, without a JS engine.
@@ -406,23 +407,7 @@ static void seed_bench_mod(const char *dir, const char *scenario) {
 
 /* play.mjs DEFAULT_OPTIONS: the beta notice and data-collection prompt are
  * options.ini flags, accepted here as the web build does on a first visit. */
-static const char OPTIONS_KEY[] =
-    "c:/isaac/documents/my games/binding of isaac repentance+/options.ini";
-static const char DEFAULT_OPTIONS[] =
-    "[Options]\r\nLanguage=0\r\nMusicVolume=0.7000\r\nMusicEnabled=1\r\n"
-    "SFXVolume=0.7000\r\nMapOpacity=0.3000\r\nFullscreen=0\r\nFilter=0\r\nExposure=1.0000\r\n"
-    "Gamma=1.0000\r\nControllerHotplug=1\r\nPopUps=1\r\nCameraStyle=1\r\nShowRecentItems=0\r\n"
-    "HudOffset=1.0000\r\nTryImportSave=0\r\nFoundHUD=0\r\nEnableMods=1\r\nRumbleEnabled=1\r\n"
-    "ChargeBars=0\r\nBulletVisibility=0\r\nTouchMode=1\r\nAimLock=1\r\nJacobEsauControls=0\r\n"
-    "AscentVoiceOver=1\r\nOnlineHud=0\r\nStreamerMode=0\r\nOnlinePlayerVolume=6\r\n"
-    "OnlinePlayerOpacity=10\r\nOnlineChatEnabled=1\r\nOnlineChatFilterEnabled=1\r\n"
-    "MultiplayerColorSet=0\r\nOnlineInputDelay=3\r\nItemInfoDisplayEnabled=0\r\n"
-    "AcceptedPublicBeta_v1.9.7.17=1\r\nAcceptedPublicBeta_v1.9.7.19=1\r\nAcceptedDataCollectionDisclaimer=1\r\n"
-    "EnableDebugConsole=0\r\nMaxScale=99\r\nMaxRenderScale=2\r\nVSync=1\r\nPauseOnFocusLost=1\r\n"
-    "SteamCloud=0\r\nMouseControl=0\r\nBossHpOnBottom=1\r\nAnnouncerVoiceMode=0\r\nConsoleFont=0\r\n"
-    "FadedConsoleDisplay=0\r\nSaveCommandHistory=1\r\nWindowWidth=960\r\nWindowHeight=540\r\n"
-    "WindowPosX=8\r\nWindowPosY=32\r\nUseExclusiveFullscreen=0\r\nEnableEpicOverlay=0\r\n"
-    "EosCrossplay=0\r\n";
+static const char OPTIONS_KEY[] = "c:/isaac/" ISAAC_OPTIONS_REL;
 
 /* ---- save persistence (ISAAC_SAVE_DIR) -------------------------------- */
 /* The node driver's convention: a file the game writes is handed over when
@@ -540,9 +525,7 @@ static char *options_with_fullscreen(const char *base, size_t len, int on, size_
     return buf;
 }
 
-/* ISAAC_NATIVE_FULLSCREEN_ON=1: turn Fullscreen on in the saved options.ini
- * once (the Switch does it at the first start of a build with the zoom, so
- * players who already have an options.ini see the default too). */
+/* ISAAC_NATIVE_FULLSCREEN_ON=1 explicitly enables Fullscreen in saved options. */
 static void force_fullscreen_option(void) {
     char path[1300];
     snprintf(path, sizeof path, "%s/%s", g_save_dir, store_rel(OPTIONS_KEY, NULL));
@@ -658,18 +641,29 @@ int isaac_native_main(int argc, char **argv) {
     const char *bench = getenv("ISAAC_NATIVE_BENCH"), *bench_mod = getenv("ISAAC_NATIVE_BENCH_MOD");
     if (bench && *bench && bench_mod && *bench_mod) seed_bench_mod(bench_mod, bench);
     const char *fs_view = getenv("ISAAC_NATIVE_FULLSCREEN_VIEW");
-    int zoom = fs_view && *fs_view;
+    const char *force = getenv("ISAAC_NATIVE_FULLSCREEN_ON");
+    int fullscreen = fs_view && *fs_view && force && *force == '1';
     if (!getenv("ISAAC_NATIVE_NO_OPTIONS")) {
-        /* With a zoomed full screen it is the default, as on the console releases. */
-        size_t len = sizeof DEFAULT_OPTIONS - 1;
-        char *text = zoom ? options_with_fullscreen(DEFAULT_OPTIONS, len, 1, &len) : NULL;
+        size_t len = strlen(isaac_default_options);
+        char *text = fullscreen ? options_with_fullscreen(isaac_default_options, len, 1, &len) : NULL;
         printf("[native] seed options.ini%s -> %s\n", text ? " (Fullscreen=1)" : "",
-               isaac_fs_seed(OPTIONS_KEY, (const uint8_t *)(text ? text : DEFAULT_OPTIONS),
+               isaac_fs_seed(OPTIONS_KEY, (const uint8_t *)(text ? text : isaac_default_options),
                              (uint32_t)len) ? "ok" : "FAIL");
         free(text);
     }
+#ifdef __SWITCH__
+    if (getenv("ISAAC_SWITCH_PERFORMANCE_DEFAULTS")) {
+        uint32_t n = 0;
+        uint8_t *effects = read_file(ISAAC_EFFECTS_REL, &n);
+        char defaults[512];
+        if (!effects) n = isaac_options_default_effects(defaults, sizeof defaults);
+        if (n) isaac_fs_seed(ISAAC_EFFECTS_REL, effects ? effects : (const uint8_t *)defaults, n);
+        free(effects);
+    }
+#endif
 
     if (g_save_dir[0]) {
+        if (getenv("ISAAC_SWITCH_PERFORMANCE_DEFAULTS")) isaac_options_recover(g_save_dir);
         isaac_fs_set_persist_hooks(persist, unlink_saved);
         restore_tree("");
         for (unsigned i = 0; i < g_mod_ndirs; ++i) {
@@ -685,8 +679,7 @@ int isaac_native_main(int argc, char **argv) {
                    g_mod_dirs[i].folder, g_mod_dirs[i].dir);
         }
         printf("[native] ISAAC_SAVE_DIR=%s: %u saved file(s) restored\n", g_save_dir, g_restored);
-        const char *force = getenv("ISAAC_NATIVE_FULLSCREEN_ON");
-        if (zoom && force && *force == '1') force_fullscreen_option();
+        if (fullscreen) force_fullscreen_option();
         accept_beta_notice();
     }
 

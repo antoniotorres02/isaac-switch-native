@@ -42,9 +42,10 @@ KEEP = {"MusicVolume", "SFXVolume", "Language", "MapOpacity", "Filter", "Exposur
 
 
 def native_default_options() -> str:
-    src = (HERE / "native" / "native_main.c").read_text()
-    m = re.search(r"DEFAULT_OPTIONS\[\] =\n(.*?);\n", src, re.S)
-    body = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1)))
+    src = (HERE / "native" / "native_options.c").read_text()
+    m = re.search(r"isaac_default_options\[\] =\n(.*?);\n", src, re.S)
+    switch_options = re.sub(r"#else\n.*?#endif\n", "", m.group(1), flags=re.S)
+    body = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', switch_options))
     return body.replace("\\r", "\r").replace("\\n", "\n")
 
 

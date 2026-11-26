@@ -348,12 +348,17 @@ static int paragraph(int x, int y, int w, const char *s, int px, int lh, uint32_
     return y;
 }
 
-/* A pad button as Switch hints draw it: a disc with its letter. */
-static int pad_button(int x, int cy, const char *letter) {
-    circle(x + 12, cy, 12, C_TEXT, 255);
-    int lw = text_w(letter, 15, BOLD, 0);
-    text(x + 12 - lw / 2, cy + 6, letter, 15, BOLD, C_NAV);
-    return 24;
+/* Draw Switch buttons with the launcher's stock shapes. */
+static int pad_button_width(const char *key) {
+    int width = text_w(key, 15, BOLD, 0) + 12;
+    return width < 24 ? 24 : width;
+}
+
+static int pad_button(int x, int cy, const char *key) {
+    int width = pad_button_width(key);
+    rrect(x, cy - 12, width, 24, 12, C_TEXT, 255);
+    text(x + (width - text_w(key, 15, BOLD, 0)) / 2, cy + 6, key, 15, BOLD, C_NAV);
+    return width;
 }
 
 /* ---- the background, drawn once ----------------------------------------------- */
@@ -643,15 +648,32 @@ static void draw_slots(const isaac_launcher_view *v) {
 }
 #endif /* ISAAC_NO_STEAM */
 
+/* Draw a controller hint with stock launcher graphics. */
+static int controller_hint(int x, int cy, const char *key, const char *second, const char *what) {
+    x -= text_w(what, 16, REG, 0);
+    text(x, cy + 6, what, 16, REG, C_TEXT);
+    x -= 8;
+    if (second) {
+        x -= pad_button_width(second);
+        pad_button(x, cy, second);
+        x -= 5;
+    }
+    x -= pad_button_width(key);
+    pad_button(x, cy, key);
+    return x - 28;
+}
+
+static int dialog_hint(int x, int cy, const char *key, const char *what) {
+    return controller_hint(x, cy, key, NULL, what);
+}
+
 static void draw_footer(const isaac_launcher_view *v) {
     int cy = FOOT_TOP + 20;
-    char act[160];
-    fit(act, sizeof act, v->activity, 13, REG, 600);
-    text(40, cy + 5, act, 13, REG, C_DIM);
     /* hints, right to left */
     int x = W - 40;
     struct { const char *key, *what; int on; } hints[] = {
         { "+", "Exit", 1 },
+        { "ZL", "Options", v->options_available },
 #ifndef ISAAC_NO_STEAM
         { "Y", "Retry sync", v->phase == ISAAC_LAUNCHER_FAILED },
         { "X", v->account_action == ISAAC_ACCOUNT_SIGN_IN ? "Sign in" : "Sign out",
@@ -665,9 +687,14 @@ static void draw_footer(const isaac_launcher_view *v) {
         int tw = text_w(hints[i].what, 16, REG, 0);
         x -= tw;
         text(x, cy + 6, hints[i].what, 16, REG, C_TEXT);
-        x -= 32;
+        x -= pad_button_width(hints[i].key) + 8;
         pad_button(x, cy, hints[i].key);
         x -= 28;
+    }
+    if (x > 40) {
+        char act[160];
+        fit(act, sizeof act, v->activity, 13, REG, x - 40);
+        text(40, cy + 5, act, 13, REG, C_DIM);
     }
 }
 
@@ -706,15 +733,6 @@ static void draw_conflict(const isaac_launcher_view *v) {
     x -= text_w("Keep this copy", 16, REG, 0);
     text(x, cy + 6, "Keep this copy", 16, REG, C_TEXT);
     pad_button(x - 32, cy, "A");
-}
-
-/* The hints at the foot of a dialog, right to left from `x`. */
-static int dialog_hint(int x, int cy, const char *key, const char *what) {
-    x -= text_w(what, 16, REG, 0);
-    text(x, cy + 6, what, 16, REG, C_TEXT);
-    x -= 32;
-    pad_button(x, cy, key);
-    return x - 28;
 }
 
 static void draw_signin(const isaac_launcher_view *v) {
@@ -801,6 +819,35 @@ void isaac_launcher_release(void) {
     if (g_ft) { FT_Done_FreeType(g_ft); g_ft = NULL; }
 }
 
+static void draw_options(const isaac_options_menu *menu) {
+    rect(0, 0, W, H, 0, 186);
+    rrect_grad(220, 56, 840, 606, 8, C_PAGE_TOP, C_PAGE_BOT, 1, 255);
+    rrect_line(220, 56, 840, 606, 8, 1, C_ACCENT, 180);
+    text(255, 104, "Game Options", 29, BOLD, C_TEXT);
+    text(255, 133, "Graphics and settings applied at the next game launch", 16, REG, C_TEXT2);
+    for (int i = 0; i < ISAAC_OPTION_COUNT; ++i) {
+        const isaac_option_spec *spec = &isaac_option_specs[i];
+        int y = 148 + i * 41, active = menu->selected == i;
+        rrect(252, y, 776, 39, 4, active ? 0x285985 : C_PANEL, active ? 255 : 82);
+        text(263, y + 19, spec->label, 17, BOLD, C_TEXT);
+        text(263, y + 35, spec->detail, 14, REG, C_TEXT2);
+        char value[32];
+        if (i == ISAAC_OPTION_FRAME_CADENCE) {
+            static const char *cadence[] = {"60 FPS", "Adaptive", "30 FPS"};
+            int mode = menu->values[i];
+            snprintf(value, sizeof value, "%s", cadence[mode >= 0 && mode <= 2 ? mode : 1]);
+        } else if (spec->max == 1) snprintf(value, sizeof value, "%s", menu->values[i] ? "On" : "Off");
+        else snprintf(value, sizeof value, "%d×", menu->values[i]);
+        text(1010 - text_w(value, 20, BOLD, 0), y + 29, value, 20, BOLD, C_TEXT);
+    }
+    if (menu->status[0]) text(255, 618, menu->status, 15, REG, C_WARN);
+    int x = dialog_hint(1028, 636, "B", "Discard");
+    x = dialog_hint(x, 636, "A", "Save");
+    x = dialog_hint(x, 636, "X", "Performance defaults");
+    x = controller_hint(x, 636, "<", ">", "Change");
+    controller_hint(x, 636, "↑", "↓", "Select");
+}
+
 void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view *v) {
     if (!g_bg && (g_bg = malloc((size_t)W * H * 4))) {
         g_px = g_bg;
@@ -831,6 +878,7 @@ void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view
     else if (v->signin != ISAAC_SIGNIN_NONE) draw_signin(v);
     else if (v->signout != ISAAC_SIGNOUT_NONE) draw_signout(v);
 #endif
+    if (v->options) draw_options(v->options);
 }
 
 /* ---- the in-game Steam Cloud panel -------------------------------------------- */
