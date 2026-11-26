@@ -20,6 +20,7 @@
 
 #include "nca_install.h"
 
+#define DIRECT_NRO "sdmc:/switch/isaac-repentance-ns1-recomp.nro"
 #define PAYLOAD "sdmc:/switch/isaac-recomp/install"
 #define LOG_PATH "sdmc:/switch/isaac-recomp/install-log.txt"
 #define MAX_OLD 16
@@ -134,13 +135,13 @@ typedef struct {
     u8 padding[7];
 } StorageRecord;
 
-static Result ns_delete_record(u64 tid) {
-    return serviceDispatchIn(nsGetServiceSession_ApplicationManagerInterface(), 27, tid);
+static Result ns_delete_record(Service *manager, u64 tid) {
+    return serviceDispatchIn(manager, 27, tid);
 }
 
-static Result ns_push_record(u64 tid, const StorageRecord *r) {
+static Result ns_push_record(Service *manager, u64 tid, const StorageRecord *r) {
     const struct { u8 last_event; u8 padding[7]; u64 tid; } in = { 3, {0}, tid };   /* 3: installed */
-    return serviceDispatchIn(nsGetServiceSession_ApplicationManagerInterface(), 16, in,
+    return serviceDispatchIn(manager, 16, in,
                              .buffer_attrs = { SfBufferAttr_HipcMapAlias | SfBufferAttr_In },
                              .buffers = { { r, sizeof *r } });
 }
@@ -162,6 +163,7 @@ static int install(inst_manifest *m) {
     u8 key[32];
     int ok = 0, ncm = 0, ns = 0;
     Result rc;
+    Service session = {0}, *manager = &session;
     NcmContentMetaKey meta_key = { .id = m->title_id, .version = m->version,
                                    .type = NcmContentMetaType_Application, .install_type = NcmContentInstallType_Full };
     NcmContentId old[MAX_OLD];
@@ -172,6 +174,19 @@ static int install(inst_manifest *m) {
     logf_("header key: 0x%x", rc);
     if (R_FAILED(rc)) { snprintf(err, sizeof err, "spl 0x%x", rc); goto out; }
     say("OK\n");
+
+    if (R_FAILED(rc = nsInitialize())) { snprintf(err, sizeof err, "ns 0x%x", rc); goto out; }
+    ns = 1;
+    /* Since Horizon 3.0, nsInitialize opens the getter service. The
+       application manager needs a separate service session. */
+    if (hosversionBefore(3, 0, 0)) {
+        manager = nsGetServiceSession_ApplicationManagerInterface();
+    } else {
+        rc = nsGetApplicationManagerInterface(&session);
+        logf_("application manager: 0x%x", rc);
+        if (R_FAILED(rc)) { snprintf(err, sizeof err, "ns application manager 0x%x", rc); goto out; }
+    }
+    int replacing_record = ns_has_record(m->title_id);
 
     if (R_FAILED(rc = ncmInitialize())) { snprintf(err, sizeof err, "ncm 0x%x", rc); goto out; }
     ncm = 1;
@@ -222,6 +237,16 @@ static int install(inst_manifest *m) {
     logf_("content meta: 0x%x", rc);
     if (R_FAILED(rc)) { snprintf(err, sizeof err, "ncm meta 0x%x", rc); goto out; }
 
+    if (replacing_record) {
+        rc = ns_delete_record(manager, m->title_id);
+        logf_("old record removed: 0x%x", rc);
+        if (R_FAILED(rc)) { snprintf(err, sizeof err, "ns remove old record 0x%x", rc); goto out; }
+    }
+    StorageRecord sr = { .key = meta_key, .storage_id = NcmStorageId_SdCard };
+    rc = ns_push_record(manager, m->title_id, &sr);
+    logf_("application record: 0x%x", rc);
+    if (R_FAILED(rc)) { snprintf(err, sizeof err, "ns record 0x%x", rc); goto out; }
+
     for (s32 i = 0; i < nold; ++i) {
         int kept = 0;
         for (int k = 0; k <= m->count; ++k) kept |= !memcmp(&old[i], m->c[k].id, sizeof old[i]);
@@ -230,13 +255,6 @@ static int install(inst_manifest *m) {
             logf_("old content removed: 0x%x", ncmContentStorageDelete(&g_cs, &old[i]));
     }
 
-    if (R_FAILED(rc = nsInitialize())) { snprintf(err, sizeof err, "ns 0x%x", rc); goto out; }
-    ns = 1;
-    if (ns_has_record(m->title_id)) logf_("old record removed: 0x%x", ns_delete_record(m->title_id));
-    StorageRecord sr = { .key = meta_key, .storage_id = NcmStorageId_SdCard };
-    rc = ns_push_record(m->title_id, &sr);
-    logf_("application record: 0x%x", rc);
-    if (R_FAILED(rc)) { snprintf(err, sizeof err, "ns record 0x%x", rc); goto out; }
     ok = 1;
 out:
     if (!ok) {
@@ -244,6 +262,7 @@ out:
         say(T("\n\n Install FAILED: %s\n", "\n\n La instalación FALLÓ: %s\n"), err);
         if (ncm >= 2) drop_placeholders();
     }
+    serviceClose(&session);
     if (ns) nsExit();
     if (ncm >= 3) ncmContentMetaDatabaseClose(&g_db);
     if (ncm >= 2) ncmContentStorageClose(&g_cs);
@@ -320,6 +339,9 @@ int main(int argc, char **argv) {
             } else {
                 say(T("\n Details in %s\n \x1b[1mA\x1b[0m try again    \x1b[1m+\x1b[0m exit\n",
                       "\n Detalles en %s\n \x1b[1mA\x1b[0m reintentar    \x1b[1m+\x1b[0m salir\n"), LOG_PATH);
+                if (access(DIRECT_NRO, F_OK) == 0)
+                    say(T(" Direct launch: exit and open IsaacNX+ in the Homebrew Menu.\n",
+                          " Inicio directo: sal y abre IsaacNX+ desde el menú homebrew.\n"));
             }
         } else if (state == 1 && (down & HidNpadButton_X)) {
             delete_payload(&m);
