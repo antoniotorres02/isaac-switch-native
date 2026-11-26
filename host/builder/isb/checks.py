@@ -178,8 +178,18 @@ def exe_candidates(dirs: list[Path], depth: int = 2, game: Path | None = None, l
     return sorted(found, key=lambda p: p.stat().st_size not in PE_SIZES)
 
 
-def find_exe(dirs: list[Path], depth: int = 2) -> Path | None:
-    """A file of the exact size whose hash matches, in a few likely folders."""
+def find_exe(dirs: list[Path], depth: int = 2, *, source: Path | None = None) -> Path | None:
+    """Check the local project executable, then search the usual folders."""
+    nearby = [Path.cwd()]
+    if source is not None:
+        nearby.extend((source, source.parent))
+    for folder in dict.fromkeys(nearby):
+        path = folder / "isaac-ng.exe"
+        try:
+            if path.is_file() and path.stat().st_size in PE_SIZES and versions.by_pe_sha256(sha256_file(path)):
+                return path
+        except OSError:
+            continue
     for d in dirs:
         for e in _walk(d, depth):
             try:

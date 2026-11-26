@@ -35,12 +35,14 @@ def drm_notice() -> None:
 
 def gather(args, with_exe: bool = True) -> tuple[list, steam.GameInstall | None, dockerctl.Status]:
     game = steam.describe_folder(args.game) if args.game else steam.find_game()
+    source = dockerctl.source_tree()
     items = checks.check_game(game)
     if with_exe:
         exe = args.exe
         if exe is None:
             say(t("exe.searching"))
-            exe = checks.find_exe(checks.exe_search_dirs(game.path if game else None))
+            exe = checks.find_exe(checks.exe_search_dirs(game.path if game else None),
+                                   source=source)
             args.exe = exe
         items += checks.check_exe(exe)
     st = dockerctl.status()
@@ -52,7 +54,9 @@ def gather(args, with_exe: bool = True) -> tuple[list, steam.GameInstall | None,
         elif dockerctl.image_is_published(ref):
             items.append(checks.Item(checks.WARN, "image.absent"))
         else:
-            items.append(checks.Item(FAIL, "image.unpublished" if dockerctl.source_tree() else "image.unavailable"))
+            items.append(checks.Item(checks.WARN, "image.unpublished") if source is not None else checks.Item(FAIL, "image.unavailable"))
+    if source is not None:
+        items.append(checks.Item(checks.INFO, "build.source", {"path": source}))
     items += checks.check_disk(args.folder, checks.NEED_DISK)
     return items, game, st
 
@@ -166,10 +170,11 @@ def cmd_build(args) -> int:
 
 
 def make_plan(args, st: dockerctl.Status, ref: str, game) -> dockerctl.Plan:
+    base = args.folder.resolve()
     return dockerctl.Plan(engine=st.engine, exe_path=st.exe, image=ref, game_exe=Path(args.exe).resolve(),
-                          game=game.path.resolve(), work=system.work_folder(args.folder),
-                          export=system.export_folder(args.folder), steam=args.steam,
-                          fmt=args.format, threads=args.threads, jobs=args.jobs)
+                          game=game.path.resolve(), work=system.work_folder(base),
+                          export=system.export_folder(base), steam=args.steam,
+                          fmt=args.format, threads=args.threads, jobs=args.jobs, source=dockerctl.source_tree())
 
 
 def cmd_copy(args) -> int:
@@ -238,13 +243,15 @@ def parser() -> argparse.ArgumentParser:
             p.add_argument("--exe", type=Path, help="the executable without DRM (searched for when absent)")
             p.add_argument("--game", type=Path, help="the game's folder (found through Steam when absent)")
 
-    common(sub.add_parser("gui", help="open the window (the default)"))
+    gui = sub.add_parser("gui", help="open the window (the default)")
+    common(gui)
     common(sub.add_parser("check", help="run every check and stop"))
     b = sub.add_parser("build", help="check, then build; run it again to resume")
     common(b)
-    b.add_argument("--steam", action="store_true", help="include Steam Cloud sync (read STEAM-CLOUD.md first)")
+    for p in (gui, b):
+        p.add_argument("--steam", action="store_true", help="include Steam Workshop and Cloud saves")
     b.add_argument("--format", choices=("nsp", "nro"), default="nsp",
-                   help="nsp: an installer that puts the game on the HOME menu (default); nro: the homebrew NRO")
+                   help="nsp: HOME menu installer (default); nro: the homebrew NRO")
     b.add_argument("--threads", type=int)
     b.add_argument("--jobs", type=int)
     b.add_argument("-v", "--verbose", action="store_true", help="show the build's log lines")

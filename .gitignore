@@ -15,3 +15,6 @@ build/
 *.segs.bin
 __pycache__/
 *.pyc
+
+# Optional launcher artwork and font supplied by the player.
+/launcher-art/

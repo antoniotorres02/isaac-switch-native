@@ -50,6 +50,17 @@ HOME → Close: the game shuts down normally and writes its saves.
 
 The NRO contains the memory image of your executable. Do not share it.
 
+## Launcher artwork and controls
+
+Press **A** to play and **B** to exit the launcher. **Minus** opens Steam
+sign-in or sign-out. If a Cloud sync fails, **ZR** retries it.
+
+The title logo and icon come from your game files. The builder uses the
+official Steam library banner when it is available. You can supply the image
+at `launcher-art/library_hero.jpg` and a local Motiva Sans font at
+`launcher-art/MotivaSans-Regular.ttf` before building. See the
+[controller icon credits](host/launcher/icons/CREDITS.md).
+
 ## Controls
 
 The pad goes through the game's own controller support, so the game's
@@ -190,7 +201,7 @@ The console can keep its saves in your account's Steam Cloud by talking to
 Steam itself: no PC, no Steam client running, no local network.
 
 The first time, the launch screen shows a QR code: scan it with the Steam app on
-your phone and approve the sign-in. **X** on that screen signs out again, which
+your phone and approve the sign-in. **Minus** on that screen signs out again, which
 also ends the session on Steam; your saves stay on the card. Press B on the code
 to play without syncing.
 

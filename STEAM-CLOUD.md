@@ -29,11 +29,11 @@ The console needs the account's **refresh token** (`iss=steam`).
 **On the console**, as on a Steam Deck: with no `steam-token.txt` the launch
 screen opens a dialog with a QR code. Scan it from the Steam app on a phone and
 approve; the token is written to the SD card and the pull starts. B closes the
-dialog and the game can be played without sync; X on the page opens it again.
+dialog and the game can be played without sync; Minus on the page opens it again.
 The code renews itself while it waits. If Steam later refuses the token (removed
-from the account, or expired) the screen says so and X signs in again.
+from the account, or expired) the screen says so and Minus signs in again.
 
-**X on the page signs out** once signed in, after a confirmation. It logs on and
+**Minus on the page signs out** once signed in, after a confirmation. It logs on and
 calls `Authentication.RevokeToken` (`revoke_action` permanent), so the session
 leaves the account's device list, then deletes `steam-token.txt`. Without a
 network the token is still deleted and the screen says Steam was not told; remove
@@ -43,8 +43,7 @@ Both sign-in and sign-out also delete `saves/steam-sync-state.txt` and the pull
 marker, since those notes describe the previous account's cloud: the next pull
 compares as a first sync. Saves are never touched by this, so a different account
 sees a conflict dialog for each slot that differs, and a slot only this console
-has **is uploaded to the account now signed in**, which the slot list shows as
-"Uploads on exit" before Play is pressed.
+has **is uploaded to the account now signed in**, when the game exits.
 
 **From a PC** still works, and is the only way with `launcher=0`:
 
@@ -197,7 +196,7 @@ comparison) and what happened to each of the six save files. The pull runs on
 its own thread while the screen animates; the game starts only when **A** is
 pressed on Play, which is disabled while the pull runs. If the sync could not
 finish the screen says why, Play becomes "Play anyway" (nothing is uploaded at
-exit then) and **Y** retries; **+** leaves without starting the game.
+exit then). **ZR** retries the sync, and **B** leaves the launcher.
 
 It is drawn in software on a libnx framebuffer with the console's shared
 system font through FreeType, and closed before the game creates its EGL

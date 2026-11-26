@@ -442,12 +442,17 @@ def make_npdm(tmp: Path, title_id: int) -> bytes:
     return (tmp / "main.npdm").read_bytes()
 
 
-def game_entries(segs: Path, index: Path, bundle: Path | None, bench: Path | None) -> dict[str, Blob]:
+def game_entries(segs: Path, index: Path, bundle: Path | None, bench: Path | None,
+                 launcher: Path | None = None) -> dict[str, Blob]:
     entries = {"isaac.segs.bin": Blob.file(segs), "instance_index.json": Blob.file(index)}
     if bench:
         for p in sorted(bench.rglob("*")):
             if p.is_file():
                 entries["isaac-bench/" + p.relative_to(bench).as_posix()] = Blob.file(p)
+    if launcher:
+        for path in sorted(launcher.iterdir()):
+            if path.is_file():
+                entries["launcher/" + path.name] = Blob.file(path)
     if bundle:
         for row in json.loads(index.read_text()):
             src = bundle / row["p"]
@@ -473,7 +478,7 @@ def build(args) -> int:
         nacp = make_nacp((tmp / "control.nacp").read_bytes(), title_id, args.version)
 
     exefs = pfs0_section(build_pfs0([("main", nso), ("main.npdm", npdm)]), EXEFS_BLOCK)
-    entries = game_entries(args.segs, args.index, args.bundle, args.bench)
+    entries = game_entries(args.segs, args.index, args.bundle, args.bench, args.launcher)
     total = sum(b.size for b in entries.values())
     print("program romfs: %d files, %.1f MB" % (len(entries), total / 1048576), flush=True)
     last = [0]
@@ -518,6 +523,7 @@ def main(argv=None) -> int:
     ap.add_argument("--index", type=Path, required=True, help="instance_index.json")
     ap.add_argument("--bundle", type=Path, help="the game's files the index lists (left out in tests)")
     ap.add_argument("--bench", type=Path, help="bench/isaac-bench")
+    ap.add_argument("--launcher", type=Path, help="local launcher artwork")
     ap.add_argument("--icon", type=Path, help="a 256x256 baseline JPEG; one is drawn when absent")
     ap.add_argument("--title-id", type=lambda s: int(s, 16), default=TITLE_ID)
     ap.add_argument("--version", default="0.1.0", help="the display version")

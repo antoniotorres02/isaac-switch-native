@@ -115,7 +115,7 @@ class App:
         self.folder = tk.StringVar(value=str(getattr(args, "folder", None) or system.default_folder()))
         self.game_var = tk.StringVar(value=str(args.game) if getattr(args, "game", None) else "")
         self.exe_var = tk.StringVar(value=str(self.exe) if self.exe else "")
-        self.steam_var = tk.BooleanVar(value=False)
+        self.steam_var = tk.BooleanVar(value=getattr(args, "steam", False))
         self.threads_var = tk.StringVar()
         self.jobs_var = tk.StringVar()
 
@@ -340,7 +340,7 @@ class App:
 
         def work():
             dirs = checks.exe_search_dirs(game)
-            return checks.find_exe(dirs), checks.exe_candidates(dirs, game=game)
+            return checks.find_exe(dirs, source=dockerctl.source_tree()), checks.exe_candidates(dirs, game=game)
 
         def done(result):
             found, candidates = result if not isinstance(result, Exception) else (None, [])
@@ -580,6 +580,9 @@ class App:
             if st.state == "ok":
                 present = dockerctl.image_present(st.exe, ref)
                 items.append(Item(OK, "image.present", {"ref": ref}) if present else Item(FAIL, "image.absent"))
+            source = dockerctl.source_tree()
+            if source is not None:
+                items.append(Item(INFO, "build.source", {"path": source}))
             items += checks.check_disk(folder, checks.NEED_DISK if not system.uses_volume() else 2 * checks.GIB)
             return game, st, items
 
@@ -599,7 +602,7 @@ class App:
         self.background(work, done)
 
     def plan(self) -> dockerctl.Plan:
-        base = Path(self.folder.get())
+        base = Path(self.folder.get()).resolve()
 
         def number(var):
             try:
@@ -613,7 +616,7 @@ class App:
                               game_exe=Path(self.exe_var.get()).resolve(), game=self.game.path.resolve(),
                               work=system.work_folder(base), export=system.export_folder(base),
                               steam=self.steam_var.get(),
-                              jobs=number(self.jobs_var))
+                              jobs=number(self.jobs_var), source=dockerctl.source_tree())
 
     def clean(self) -> None:
         if self.running:
