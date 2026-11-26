@@ -215,6 +215,10 @@ T: dict[str, tuple[str, str]] = {
                            "All set. The build takes about 45 minutes (25 of them in Ghidra) and uses about "
                            "8 GiB of memory. You can leave it working: the computer will not sleep meanwhile."),
     "page.options.folder": ("Carpeta del resultado:", "Result folder:"),
+    "page.options.format": ("Formato", "Output format"),
+    "page.options.format.nsp": ("Instalador HOME", "HOME Menu installer"),
+    "page.options.format.nro": ("Inicio directo (NRO)", "Direct launch (NRO)"),
+    "page.options.format.both": ("Ambos", "Both"),
     "page.options.advanced": ("Opciones avanzadas", "Advanced options"),
     "page.options.steam": ("Incluir Steam Cloud (sincronizar partidas desde la consola)",
                            "Include Steam Cloud (sync saves from the console)"),
@@ -241,19 +245,16 @@ T: dict[str, tuple[str, str]] = {
                           "again, “Copy report” and ask for help with it."),
     "page.build.problems": ("El contenedor no puede empezar:", "The container cannot start:"),
     "page.result": ("6. ¡Hecho!", "6. Done!"),
-    "page.result.intro": ("El instalador y el juego están en:", "The installer and the game are in:"),
+    "page.result.intro": ("Los archivos para la SD están en:", "Your SD card files are in:"),
     "page.result.hash": ("SHA-256 del NRO del juego: {sha}", "Game NRO SHA-256: {sha}"),
-    "page.result.how": (
-        "Copia el CONTENIDO de esa carpeta a la raíz de la SD (con un lector de tarjetas, o con el botón de abajo). "
-        "Tus partidas no se tocan.\n\nEn la consola, abre el menú homebrew, lanza isaac-recomp-installer y pulsa A: "
-        "instala ISAAC REPENTANCE+ NS1 RECOMP en el menú HOME (hace falta Atmosphère con sigpatches). Al terminar "
-        "puedes borrar los ficheros de instalación con X. Los mods van en sdmc:/switch/isaac-recomp/mods/. "
-        "PLAYING.md explica los controles y cómo pasar tus partidas.",
-        "Copy the CONTENTS of that folder to the root of the SD card (with a card reader, or with the button below). "
-        "Your saves are not touched.\n\nOn the console, open the homebrew menu, start isaac-recomp-installer and "
-        "press A: it installs ISAAC REPENTANCE+ NS1 RECOMP on the HOME menu (Atmosphère with sigpatches is needed). "
-        "When it is done, X deletes the install files. Mods go in sdmc:/switch/isaac-recomp/mods/. PLAYING.md covers "
-        "the controls and moving your saves."),
+    "page.result.nsp": (
+        "Para instalar en el menú HOME, abre isaac-recomp-installer desde el menú homebrew y pulsa A. "
+        "Necesita Atmosphère con sigpatches. Tras instalar, X borra los archivos de instalación.",
+        "For HOME Menu installation, open isaac-recomp-installer from the Homebrew Menu and press A. "
+        "It requires Atmosphère with sigpatches. After installation, X removes the install files."),
+    "page.result.nro": (
+        "Para iniciar directamente, abre ISAAC REPENTANCE+ NS1 RECOMP desde el menú homebrew en modo Aplicación.",
+        "For direct launch, open ISAAC REPENTANCE+ NS1 RECOMP from the Homebrew Menu in Application mode."),
     "page.result.share": ("No compartas el juego instalado ni esa carpeta: llevan la imagen del ejecutable y los ficheros del "
                           "juego. Cada persona tiene que construir el suyo.",
                           "Do not share the installed game or that folder: they hold the executable's image and the game's "
@@ -343,6 +344,15 @@ def t(key: str, **values) -> str:
         return key
     text = pair[0] if lang() == "es" else pair[1]
     return text.format(**values) if values else text
+
+
+def launch_steps(fmt: str) -> str:
+    steps = []
+    if fmt in ("nro", "both"):
+        steps.append(t("page.result.nro"))
+    if fmt in ("nsp", "both"):
+        steps.append(t("page.result.nsp"))
+    return "\n\n".join(steps)
 
 
 def duration(seconds: float) -> str:

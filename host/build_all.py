@@ -6,11 +6,12 @@ docker/Dockerfile (see GUIDE.md). Everything is checked before anything slow
 starts, finished stages are remembered in <work>/stamps so a run that was cut
 short carries on where it stopped, and each stage keeps its log in <work>/logs.
 
-    build_all.py [--steam] [--format nsp|nro] [--check-only] [--progress json] [--export DIR]
+    build_all.py [--steam] [--format nsp|nro|both] [--check-only] [--progress json] [--export DIR]
 
 --format nsp (the default) prepares an install: the installer NRO and the game
 as a payload it installs as a title on the HOME menu (installer/). --format nro
-is the homebrew NRO with the game's files loose on the SD card, as before.
+is the homebrew NRO with the game's files loose on the SD card. --format both
+puts both launch methods in the same SD card folder.
 
 With --progress json every line on stdout is one JSON object (see emit_json),
 for the builder program in builder/; the text output is for people.
@@ -41,6 +42,7 @@ UPSTREAM_INFO = json.loads((HERE / "upstream.json").read_text(encoding="utf-8"))
 # Bump when a stage changes what it produces: older stamps stop counting.
 # 2: no Ghidra (versions/<v>/functions.txt) and no Emscripten (upstream_steps.py).
 PIPELINE_VERSION = 2
+OUTPUT_STAMP_REVISION = 2   # rebuild SD outputs from before the NS installer fix
 
 GIB = 1024 ** 3
 MIN_FREE_DISK = 6 * GIB     # see "What you need" in GUIDE.md
@@ -329,6 +331,7 @@ def build_stages(args, up: Path, out: Path) -> list[Stage]:
     jobs = args.jobs or default_jobs()
     lift_jobs = args.jobs or default_jobs(LIFT_JOB_MEMORY)
     version = args.version
+    include_installer = args.format in ("nsp", "both")
 
     def prepare(r: Runner) -> None:
         # Always from scratch: the work folder may hold another version's tree.
@@ -404,14 +407,16 @@ def build_stages(args, up: Path, out: Path) -> list[Stage]:
               "--out", payload_dir(out)])
 
     def sd_card(r: Runner) -> None:
-        if args.format == "nsp":
-            make_install_card(out / "installer" / INSTALLER_NRO, payload_dir(out), out / "sd-card")
-        else:
+        sd = out / "sd-card"
+        if args.format != "nsp":
             make_sd_card(up / ".scratch" / "game-dist" / "instance_index.json", up / ".scratch" / "game-bundle",
-                         nro_path(out, args.steam), out / "sd-card")
+                         nro_path(out, args.steam), sd)
+        if include_installer:
+            make_install_card(out / "installer" / INSTALLER_NRO, payload_dir(out), sd,
+                              keep_nro=args.format == "both")
 
     nsp_stage = [Stage("nsp", "Preparing the install (NSP payload and installer)", nsp, depends_on_options=True,
-                       produces=lambda: payload_dir(out) / "install.txt")] if args.format == "nsp" else []
+                       produces=lambda: payload_dir(out) / "install.txt")] if include_installer else []
     return [
         Stage("prepare", "Preparing the sources", prepare),
         Stage("functions", "Listing the game's functions", functions),
@@ -436,10 +441,11 @@ def payload_dir(out: Path) -> Path:
     return out / "nsp" / "install"
 
 
-def make_install_card(installer: Path, payload: Path, sd: Path) -> int:
+def make_install_card(installer: Path, payload: Path, sd: Path, *, keep_nro: bool = False) -> int:
     """<sd>/switch/isaac-recomp-installer.nro and the payload it reads from
     <sd>/switch/isaac-recomp/install/ (installer/source/main.c)."""
-    shutil.rmtree(sd, ignore_errors=True)
+    if not keep_nro:
+        shutil.rmtree(sd, ignore_errors=True)
     place(installer, sd / "switch" / INSTALLER_NRO)
     files = sorted(p for p in payload.iterdir() if p.is_file())
     for p in files:
@@ -482,9 +488,8 @@ def main(argv=None) -> int:
                     help="the prepared upstream checkout, copied into <work> at the first run")
     ap.add_argument("--steam", action="store_true",
                     help="include the Steam sign-in and Cloud sync (an unofficial client: read STEAM-CLOUD.md first)")
-    ap.add_argument("--format", choices=("nsp", "nro"), default="nsp",
-                    help="nsp: an installer and the game as a title for the HOME menu (default); "
-                         "nro: the homebrew NRO with the game's files on the SD card")
+    ap.add_argument("--format", choices=("nsp", "nro", "both"), default="nsp",
+                    help="nsp: HOME Menu installer (default); nro: direct launch; both: both launch methods")
     ap.add_argument("--check-only", action="store_true", help="run the checks and stop")
     ap.add_argument("--threads", type=int, help=argparse.SUPPRESS)   # Ghidra's, before version 2: ignored
     ap.add_argument("--jobs", type=int, help="parallel jobs (default: all CPUs but one, as memory allows)")
@@ -505,7 +510,7 @@ def main(argv=None) -> int:
     started_before = (args.work / "upstream" / "output").is_dir()
     problems += check_work(args.work, MIN_FREE_DISK // 2 if started_before else MIN_FREE_DISK, memory_limit())
     if args.export and not problems:
-        problems += check_work(args.export, 2 * GIB, None)
+        problems += check_work(args.export, (3 if args.format == "both" else 2) * GIB, None)
     if problems:
         if json_mode:
             emit_json(sys.stdout, "problems", problems=problems)
@@ -525,7 +530,7 @@ def main(argv=None) -> int:
     os.environ["PYTHONHASHSEED"] = "0"
 
     up, out = args.work / "upstream", args.work / "out"
-    options = "steam" if args.steam else "no-steam"
+    options = ("steam" if args.steam else "no-steam") + f" {OUTPUT_STAMP_REVISION}"
     patches = hashlib.sha256(b"".join(f.read_bytes() for f in sorted((HERE / "upstream-patches").glob("*.patch"))))
     runner = Runner(args.work, "%s %s %s" % (args.version.pe_sha256, args.version.fingerprint(),
                                              patches.hexdigest()[:16]), options,
@@ -571,9 +576,11 @@ def main(argv=None) -> int:
     print("\nDone in %s." % duration(took))
     print("NRO sha256: %s" % digest)
     print("Copy the contents of %s to the root of your SD card." % sd)
-    if args.format == "nsp":
+    if args.format in ("nsp", "both"):
         print("On the console, open %s from the homebrew menu and press A: the game is" % INSTALLER_NRO)
         print("installed on the HOME menu (Atmosphère with sigpatches). Mods go in sdmc:/switch/isaac-recomp/mods/.")
+    if args.format in ("nro", "both"):
+        print("For direct launch, open ISAAC REPENTANCE+ NS1 RECOMP from the Homebrew Menu in Application mode.")
     print("What it built contains the game's executable image: it is for you alone, do not share it.")
     return 0
 

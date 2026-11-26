@@ -17,6 +17,18 @@ mode**: hbmenu opened by holding R while launching a game, or Sphaira (tested
 with 1.0.8). Applet mode (hbmenu opened from the Album) does not have enough
 memory, and the NRO refuses to start there.
 
+Choose **Both** in the Builder or pass `--format both` to copy the installer
+and the direct-launch game to the same SD card. Run
+`isaac-recomp-installer.nro` from the Homebrew Menu and press **A** to
+install the HOME Menu title. **ISAAC REPENTANCE+ NS1 RECOMP** remains available to launch from
+the Homebrew Menu in Application mode, including after an installer error.
+Pressing **X** after a successful install deletes the install payload and
+keeps the direct-launch game files.
+
+Both launch methods use the same `sdmc:/switch/isaac-recomp/saves/` folder.
+The HOME Menu title keeps mods in `sdmc:/switch/isaac-recomp/mods/`, and the
+direct-launch game reads `sdmc:/switch/isaac-recomp/guest/mods/`.
+
 The SD card layout:
 
 ```

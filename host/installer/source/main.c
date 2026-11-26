@@ -340,8 +340,8 @@ int main(int argc, char **argv) {
                 say(T("\n Details in %s\n \x1b[1mA\x1b[0m try again    \x1b[1m+\x1b[0m exit\n",
                       "\n Detalles en %s\n \x1b[1mA\x1b[0m reintentar    \x1b[1m+\x1b[0m salir\n"), LOG_PATH);
                 if (access(DIRECT_NRO, F_OK) == 0)
-                    say(T(" Direct launch: exit and open IsaacNX+ in the Homebrew Menu.\n",
-                          " Inicio directo: sal y abre IsaacNX+ desde el menú homebrew.\n"));
+                    say(T(" Direct launch: exit and open ISAAC REPENTANCE+ NS1 RECOMP in the Homebrew Menu.\n",
+                          " Inicio directo: sal y abre ISAAC REPENTANCE+ NS1 RECOMP desde el menú homebrew.\n"));
             }
         } else if (state == 1 && (down & HidNpadButton_X)) {
             delete_payload(&m);
