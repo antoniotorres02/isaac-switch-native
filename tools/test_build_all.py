@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "host/build_all.py"
@@ -289,6 +290,41 @@ def test_sd_card(tmp: Path) -> None:
         raise AssertionError("a listed file that is absent must stop the stage")
 
 
+def test_output_formats(tmp: Path) -> None:
+    up, out = tmp / "upstream", tmp / "out"
+    index = up / ".scratch" / "game-dist" / "instance_index.json"
+    index.parent.mkdir(parents=True)
+    index.write_text(json.dumps([{"p": "savedatapath.txt"}]))
+    bundle = up / ".scratch" / "game-bundle"
+    bundle.mkdir()
+    (bundle / "savedatapath.txt").write_bytes(b"game files")
+    installer = out / "installer" / build_all.INSTALLER_NRO
+    installer.parent.mkdir(parents=True)
+    installer.write_bytes(b"installer")
+    payload = build_all.payload_dir(out)
+    payload.mkdir(parents=True)
+    (payload / "install.txt").write_bytes(b"manifest")
+    (payload / "program.nca").write_bytes(b"payload")
+
+    for steam in (True, False):
+        nro = build_all.nro_path(out, steam)
+        nro.parent.mkdir(parents=True)
+        nro.write_bytes(b"steam game" if steam else b"offline game")
+        for fmt in ("both", "nsp", "both", "nro"):
+            args = SimpleNamespace(jobs=1, version=object(), format=fmt, steam=steam)
+            stages = {stage.name: stage for stage in build_all.build_stages(args, up, out)}
+            assert ("nsp" in stages) == (fmt != "nro")
+            stages["sdcard"].run(None)
+            switch = out / "sd-card" / "switch"
+            direct = switch / nro.name
+            assert direct.exists() == (fmt != "nsp")
+            if direct.exists():
+                assert direct.read_bytes() == nro.read_bytes()
+                assert (switch / "isaac-recomp/guest/savedatapath.txt").is_file()
+            assert (switch / installer.name).exists() == (fmt != "nro")
+            assert (switch / "isaac-recomp/install/program.nca").exists() == (fmt != "nro")
+
+
 def test_main_refuses_quickly(tmp: Path) -> None:
     work = tmp / "work"
     game = fake_game(tmp / "game")
@@ -374,7 +410,9 @@ def test_main_json_problems(tmp: Path) -> None:
 
 
 def main() -> int:
-    for test in (test_exe, test_shipped_versions, test_functions_data, test_game, test_work, test_resume, test_produces, test_unexpected_error, test_sigterm, test_sh, test_sd_card, test_main_refuses_quickly,
+    for test in (test_exe, test_shipped_versions, test_functions_data, test_game, test_work, test_resume,
+                 test_produces, test_unexpected_error, test_sigterm, test_sh,
+                 test_sd_card, test_output_formats, test_main_refuses_quickly,
                  test_json_events, test_json_log_lines, test_export, test_main_json_problems):
         with tempfile.TemporaryDirectory() as d:
             test(Path(d))

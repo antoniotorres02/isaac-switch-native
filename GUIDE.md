@@ -68,7 +68,7 @@ docker run --rm --network none -u "$(id -u):$(id -g)" \
   -v "$EXE":/input/isaac-ng.unpacked.exe:ro \
   -v "$GAME":/game:ro \
   -v "$PWD/isaac-build":/work \
-  isaac-switch-builder
+  isaac-switch-builder --format both
 ```
 
 The executable and the game are mounted read-only, and the build has no network:
@@ -104,12 +104,15 @@ Copy the **contents** of `isaac-build/out/sd-card/` to the root of your SD card,
 a card reader or over FTP. It holds:
 
 ```
-switch/isaac-repentance-ns1-recomp.nro
-switch/isaac-recomp/guest/...      the 22 game files the NRO reads
+switch/isaac-repentance-ns1-recomp.nro  direct-launch game
+switch/isaac-recomp/guest/...          the game files the NRO reads
+switch/isaac-recomp-installer.nro      HOME Menu installer
+switch/isaac-recomp/install/...        installer payload
 ```
 
-Your saves are not in there, so copying it does not touch them. Then start
-**ISAAC REPENTANCE+ NS1 RECOMP** from the homebrew launcher in Application mode.
+Open **ISAAC REPENTANCE+ NS1 RECOMP** from the Homebrew Menu in Application mode for direct
+launch. For a HOME Menu icon, start `isaac-recomp-installer.nro` and press
+**A**. Use `--format nro` or `--format nsp` to prepare a single launch method.
 
 [PLAYING.md](PLAYING.md) covers the controls, `settings.ini`, moving your PC saves
 and adding mods.

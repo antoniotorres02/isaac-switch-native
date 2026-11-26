@@ -1,9 +1,8 @@
 # Installer: the game as a title on the HOME menu
 
-`build_all.py --format nsp` (the default, and what the Builder uses) does not
-put the NRO on the SD card. It puts there an installer NRO and the game as a
-*payload*; the installer, run once on the console, installs the game as a
-normal title, with its own icon on the HOME menu.
+`build_all.py --format nsp` prepares the installer NRO and its payload. Run the
+installer on the console to add the game to the HOME Menu. Use `--format both`
+to also include a direct-launch NRO and its loose game files on the same card.
 
 ```
 sd-card/switch/isaac-recomp-installer.nro
@@ -27,6 +26,11 @@ from a public source and unwraps the encrypted key with it).
 placeholders while hashing them, then builds the meta NCA (a PFS0 holding the
 cnmt with each NCA's SHA-256). `source/main.c` registers the three, writes the
 content meta record and pushes the application record to ns.
+
+On Horizon 3.0 and later, libnx opens an NS getter service at initialization.
+The installer opens its application-manager session before writing content.
+The older installer used an uninitialized service handle on those versions,
+which caused `ns record 0xe401`. [libnx NS source](https://github.com/switchbrew/libnx/blob/master/nx/source/services/ns.c)
 
 Content ids are the first half of each NCA's *plaintext* SHA-256, computed by
 `payload.py`: ncm needs the id before the console has hashed the encrypted NCA,
@@ -58,17 +62,15 @@ Management, as with any title.
   this title's id and `application_type` 1.
 - No logo section in the program NCA (hacBrewPack's `--nologo` case).
 - Free space: the payload and the install both live on the SD card (about
-  2 × 1.1 GB during the install). X deletes the payload afterwards.
+  2 × 1.1 GB during the install). **Both** also includes the direct-launch
+  files, about 1.1 GB more. X deletes the installer payload afterwards.
 
 ## Checks
 
-`tools/test_switch_installer.py` builds a fake game, runs `payload.py` in the
-builder image, finishes the NCAs with `nca_install.c` against OpenSSL and a
-made-up header key, and has hactool (devkitA64 image) verify them: every hash
-level GOOD, RomFS/ExeFS byte for byte, cnmt hashes and the ncm record.
-`build.py` builds the NRO with `-Wall -Wextra -Werror`.
+`tools/test_build_all.py` checks the contents of the SD card folder for all
+three output formats. `build.py` builds the installer NRO with
+`-Wall -Wextra -Werror`. The PC driver under `test/` can finish the NCAs with
+OpenSSL and a synthetic key so their contents can be inspected on a host.
 
-Status (2026-11-22): host only. The format checks pass, and also at full size
-(the 1.9.7.17 build: program NCA 1,059 MB, every level GOOD). **Not yet run
-on a console**: the spl derivation, ncm/ns calls, booting the NSO and the mods
-folder are untested there.
+The updated installer and both output formats build on the host. Successful
+HOME Menu registration and launch still need to be confirmed on a Switch.

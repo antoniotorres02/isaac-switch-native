@@ -181,10 +181,11 @@ class Plan:
     work: Path | None        # a folder (Linux); None means the VOLUME (Windows)
     export: Path | None      # where the SD card folder is copied, when work is the volume
     steam: bool = False
-    fmt: str = "nsp"         # build_all.py --format: nsp (installer + payload) or nro
+    fmt: str = "nsp"         # build_all.py --format: nsp, nro or both
     threads: int | None = None
     jobs: int | None = None
     check_only: bool = False
+    source: Path | None = None
 
 
 def _mount_field(value: str) -> str:
@@ -217,6 +218,8 @@ def build_command(plan: Plan, platform: str | None = None, uid: tuple[int, int] 
         cmd += mount("bind", plan.work, "/work")
     if plan.export is not None:
         cmd += mount("bind", plan.export, "/export")
+    if plan.source is not None:
+        cmd += mount("bind", plan.source / "host", "/opt/isaac/host", readonly=True)
     cmd += [plan.image, "--progress", "json"]
     if plan.export is not None:
         cmd += ["--export", "/export"]

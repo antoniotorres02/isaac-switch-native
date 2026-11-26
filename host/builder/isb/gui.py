@@ -116,6 +116,7 @@ class App:
         self.game_var = tk.StringVar(value=str(args.game) if getattr(args, "game", None) else "")
         self.exe_var = tk.StringVar(value=str(self.exe) if self.exe else "")
         self.steam_var = tk.BooleanVar(value=False)
+        self.format_var = tk.StringVar(value=getattr(args, "format", "nsp"))
         self.threads_var = tk.StringVar()
         self.jobs_var = tk.StringVar()
 
@@ -526,6 +527,15 @@ class App:
         if system.uses_volume():
             ttk.Label(f, text=t("page.options.volume"), style="Small.TLabel", wraplength=WRAP).pack(anchor="w")
 
+        formats = ttk.Frame(f)
+        formats.pack(anchor="w", pady=(10, 0))
+        ttk.Label(formats, text=t("page.options.format")).pack(side="left", padx=(0, 8))
+        for fmt, label in (("nsp", t("page.options.format.nsp")),
+                           ("nro", t("page.options.format.nro")),
+                           ("both", t("page.options.format.both"))):
+            ttk.Radiobutton(formats, text=label, variable=self.format_var,
+                            value=fmt).pack(side="left", padx=(0, 8))
+
         self.adv_open = tk.BooleanVar(value=False)
         ttk.Checkbutton(f, text=t("page.options.advanced"), variable=self.adv_open,
                         command=self.toggle_advanced).pack(anchor="w", pady=(10, 0))
@@ -612,8 +622,8 @@ class App:
                               image=dockerctl.image_ref(getattr(self.args, "image", None)),
                               game_exe=Path(self.exe_var.get()).resolve(), game=self.game.path.resolve(),
                               work=system.work_folder(base), export=system.export_folder(base),
-                              steam=self.steam_var.get(),
-                              jobs=number(self.jobs_var))
+                              steam=self.steam_var.get(), fmt=self.format_var.get(),
+                              jobs=number(self.jobs_var), source=dockerctl.source_tree())
 
     def clean(self) -> None:
         if self.running:
@@ -643,10 +653,11 @@ class App:
         for row, name in enumerate(names):
             mark = ttk.Label(grid, text="·", width=2, font=("TkDefaultFont", 11, "bold"))
             mark.grid(row=row, column=0, sticky="w")
-            ttk.Label(grid, text=t("stage." + name)).grid(row=row, column=1, sticky="w", pady=1)
+            label = ttk.Label(grid, text=t("stage." + name))
+            label.grid(row=row, column=1, sticky="w", pady=1)
             took = ttk.Label(grid, style="Small.TLabel")
             took.grid(row=row, column=2, sticky="e", padx=(16, 0))
-            self.stage_rows[name] = (mark, took)
+            self.stage_rows[name] = (mark, label, took)
         self.bar = ttk.Progressbar(f, maximum=1.0)
         self.bar.pack(fill="x")
         self.time_label = ttk.Label(f)
@@ -674,9 +685,14 @@ class App:
 
     def launch(self) -> None:
         plan = self.plan()
-        self.progress = Progress(export=plan.export is not None)
+        self.progress = Progress(export=plan.export is not None, nsp=plan.fmt in ("nsp", "both"))
         self.running, self.stopping = True, False
-        for name, (mark, took) in self.stage_rows.items():
+        for name, (mark, label, took) in self.stage_rows.items():
+            for widget in (mark, label, took):
+                if name in self.progress.names:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
             mark.configure(text="·", foreground="")
             took.configure(text="")
         self.message.configure(text=t("page.build.starting"), foreground="")
@@ -721,7 +737,7 @@ class App:
     def render_stages(self) -> None:
         p = self.progress
         for name, state in p.state.items():
-            mark, took = self.stage_rows.get(name, (None, None))
+            mark, _, took = self.stage_rows.get(name, (None, None, None))
             if not mark:
                 continue
             sym, colour = {"done": ("✔", COLOURS[OK]), "skipped": ("✔", COLOURS[OK]),
@@ -772,6 +788,7 @@ class App:
         if p and p.result:
             self.result_path.configure(text=str(system.result_folder(Path(self.folder.get()))))
             self.result_hash.configure(text=t("page.result.hash", sha=p.result.get("nro_sha256", "")))
+            self.result_how.configure(text=texts.launch_steps(p.result.get("format", self.format_var.get())))
             self.refresh_nav()
             self.show(5)
             self.refresh_drives()
@@ -800,7 +817,8 @@ class App:
                    command=lambda: system.open_path(system.result_folder(Path(self.folder.get())))).pack(side="right")
         self.result_hash = ttk.Label(f, style="Small.TLabel")
         self.result_hash.pack(anchor="w")
-        ttk.Label(f, text=t("page.result.how"), wraplength=WRAP, justify="left").pack(anchor="w", pady=10)
+        self.result_how = ttk.Label(f, wraplength=WRAP, justify="left")
+        self.result_how.pack(anchor="w", pady=10)
         ttk.Label(f, text="⚠  " + t("page.result.share"), style="Danger.TLabel", wraplength=WRAP,
                   justify="left").pack(anchor="w")
 

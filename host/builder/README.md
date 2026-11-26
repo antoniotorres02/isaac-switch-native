@@ -58,7 +58,7 @@ Run `isaac-switch-builder` (on Windows, `isaac-switch-builder.exe`). Six pages:
      (`sudo systemctl start docker`, or `sudo usermod -aG docker $USER`);
    - too little memory, on Windows: **Open .wslconfig**, explained step by step;
    - then the tool image (downloaded once, ~230 MB; ~1 GB on disk).
-4. **Ready**: where the result goes, **Check everything**, and **Start the build**.
+4. **Ready**: choose an output format and result folder, then start the build.
    Steam Cloud and the number of jobs are under *Advanced options*.
 5. **Building**: the nine stages, how long is left, and **Stop**. Stopping is safe:
    **Carry on from where it was** resumes at the stage it was on. The computer does
@@ -82,6 +82,17 @@ isaac-switch-builder clean                                   # delete the work f
 
 **Do not share the NRO or the result folder**: they hold the executable's image and
 the game's files. Everyone has to build their own.
+
+## Build output
+
+The Builder can prepare a HOME Menu installer, a direct-launch NRO, or both
+in the same SD card folder. The command-line flags are `--format nsp`,
+`--format nro`, and `--format both`. Output defaults to the installer.
+
+To test changes from a source checkout, run
+`python3 host/builder/isaac_switch_builder.py gui` or use the
+[Docker guide](../../GUIDE.md). The source Builder uses the checkout's host
+files with the tools from the pinned Docker image.
 
 ## How it works
 

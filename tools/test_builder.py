@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "host/builder"))
 
-from isb import checks, dockerctl, progress, sdcard, steam, system, texts  # noqa: E402
+from isb import checks, cli, dockerctl, progress, sdcard, steam, system, texts  # noqa: E402
 from isb.checks import FAIL, OK, WARN  # noqa: E402
 
 MANIFEST = '''"AppState"
@@ -190,6 +190,12 @@ def test_command_linux(tmp: Path) -> None:
     assert cmd[-3:] == ["--steam", "--jobs", "3"]
     cmd = dockerctl.build_command(plan(fmt="nro"), "linux", (5, 6))
     assert cmd[-2:] == ["--format", "nro"], "nsp is build_all.py's default and is not passed"
+    cmd = dockerctl.build_command(plan(fmt="both"), "linux", (5, 6))
+    assert cmd[-2:] == ["--format", "both"]
+    cmd = dockerctl.build_command(plan(fmt="both", source=ROOT), "linux", (5, 6))
+    assert "type=bind,source=%s,target=/opt/isaac/host,readonly" % (ROOT / "host") in mounts(cmd)
+    for command in ("gui", "build"):
+        assert cli.parser().parse_args([command, "--format", "both"]).format == "both"
 
 
 def test_command_windows(tmp: Path) -> None:

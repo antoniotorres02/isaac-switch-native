@@ -111,7 +111,7 @@ def cmd_build(args) -> int:
         say(t("image.failed"))
         return 2
     plan = make_plan(args, st, ref, game)
-    progress = Progress(export=plan.export is not None, nsp=plan.fmt == "nsp")
+    progress = Progress(export=plan.export is not None, nsp=plan.fmt in ("nsp", "both"))
     last = {"line": ""}
 
     def on_event(event):
@@ -153,6 +153,7 @@ def cmd_build(args) -> int:
         say()
         say(t("page.result.hash", sha=progress.result.get("nro_sha256", "")))
         say(t("cli.done", time=texts.duration(progress.elapsed()), path=system.result_folder(args.folder)))
+        say(texts.launch_steps(plan.fmt))
         say(t("page.result.share"))
         return 0
     if progress.stopped or rc in (130, 137, 143):
@@ -169,7 +170,7 @@ def make_plan(args, st: dockerctl.Status, ref: str, game) -> dockerctl.Plan:
     return dockerctl.Plan(engine=st.engine, exe_path=st.exe, image=ref, game_exe=Path(args.exe).resolve(),
                           game=game.path.resolve(), work=system.work_folder(args.folder),
                           export=system.export_folder(args.folder), steam=args.steam,
-                          fmt=args.format, threads=args.threads, jobs=args.jobs)
+                          fmt=args.format, threads=args.threads, jobs=args.jobs, source=dockerctl.source_tree())
 
 
 def cmd_copy(args) -> int:
@@ -238,13 +239,15 @@ def parser() -> argparse.ArgumentParser:
             p.add_argument("--exe", type=Path, help="the executable without DRM (searched for when absent)")
             p.add_argument("--game", type=Path, help="the game's folder (found through Steam when absent)")
 
-    common(sub.add_parser("gui", help="open the window (the default)"))
+    gui = sub.add_parser("gui", help="open the window (the default)")
+    common(gui)
     common(sub.add_parser("check", help="run every check and stop"))
     b = sub.add_parser("build", help="check, then build; run it again to resume")
     common(b)
     b.add_argument("--steam", action="store_true", help="include Steam Cloud sync (read STEAM-CLOUD.md first)")
-    b.add_argument("--format", choices=("nsp", "nro"), default="nsp",
-                   help="nsp: an installer that puts the game on the HOME menu (default); nro: the homebrew NRO")
+    for p in (gui, b):
+        p.add_argument("--format", choices=("nsp", "nro", "both"), default="nsp",
+                       help="nsp: HOME Menu installer (default); nro: direct launch; both: both launch methods")
     b.add_argument("--threads", type=int)
     b.add_argument("--jobs", type=int)
     b.add_argument("-v", "--verbose", action="store_true", help="show the build's log lines")
