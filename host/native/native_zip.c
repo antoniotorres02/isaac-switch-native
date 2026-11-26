@@ -141,16 +141,39 @@ int isaac_zip_unpack(const void *zip, size_t zip_len, void *out, size_t cap, siz
     const uint8_t *z = zip;
     if (!z || !out || zip_len < 30 + sizeof(ISAAC_ZIP_ENTRY) - 1 + 22) return -1;
     if (get32(z) != LOCAL_SIG) return -1;
-    uint16_t method = get16(z + 8);
+    uint16_t flags = get16(z + 6), method = get16(z + 8);
     uint32_t crc = get32(z + 14);
     uint32_t packed = get32(z + 18);
     uint32_t raw = get32(z + 22);
     uint16_t name_len = get16(z + 26), extra_len = get16(z + 28);
     size_t data = 30u + name_len + extra_len;
-    if (data + packed > zip_len || raw > cap) return -1;
+    size_t end = zip_len;
+    if (flags & 1) return -1;
+    if (flags & 8) {
+        /* Streamed ZIPs put the sizes and CRC in the central directory. */
+        size_t pos = zip_len - 22;
+        size_t limit = pos > 65535 ? pos - 65535 : 0;
+        while (get32(z + pos) != EOCD_SIG || get16(z + pos + 20) != zip_len - pos - 22) {
+            if (pos == limit) return -1;
+            --pos;
+        }
+        size_t central = get32(z + pos + 16);
+        if (get16(z + pos + 4) || get16(z + pos + 6) || get16(z + pos + 8) != 1 ||
+            get16(z + pos + 10) != 1 || central > pos || pos - central < 46 ||
+            get32(z + pos + 12) != pos - central) return -1;
+        const uint8_t *entry = z + central;
+        if (get32(entry) != CENTRAL_SIG || get16(entry + 8) != flags ||
+            get16(entry + 10) != method || get32(entry + 42) != 0) return -1;
+        crc = get32(entry + 16);
+        packed = get32(entry + 20);
+        raw = get32(entry + 24);
+        end = central;
+    }
+    if (data > end || packed > end - data || raw > cap) return -1;
 
     size_t written = 0;
     if (method == 0) {
+        if (packed != raw) return -1;
         memcpy(out, z + data, packed);
         written = packed;
     } else if (method == 8) {

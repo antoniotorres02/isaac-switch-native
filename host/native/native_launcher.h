@@ -14,6 +14,9 @@
 
 #include "native_qr.h"
 #include "native_steamsync.h"
+#ifndef ISAAC_NO_STEAM
+#include "native_workshop_browser.h"
+#endif
 
 #define ISAAC_LAUNCHER_W 1280
 #define ISAAC_LAUNCHER_H 720
@@ -86,6 +89,10 @@ typedef struct {
     int files;                          /* ISAAC_FILES_* */
     char files_summary[32];             /* "22 of 22 found", "4 missing" */
     char files_detail[192];             /* which ones, and what to do */
+#ifndef ISAAC_NO_STEAM
+    const workshop_view *workshop;
+    int workshop_available;
+#endif
     float t;                            /* seconds, for the animations */
 } isaac_launcher_view;
 
@@ -94,6 +101,11 @@ int isaac_launcher_set_font(const void *data, size_t size);
 
 /* Draws the whole screen. `stride` is in pixels. */
 void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view *view);
+
+#ifndef ISAAC_NO_STEAM
+int isaac_launcher_workshop_description_pages(const char *description);
+unsigned isaac_launcher_workshop_description_media(const char *description, int page);
+#endif
 
 /* The in-game Steam Cloud panel (opened with - and + together). */
 #define ISAAC_PANEL_W 640

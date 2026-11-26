@@ -67,8 +67,7 @@ T: dict[str, tuple[str, str]] = {
                   "Another game version, or a file that differs in a single byte, cannot work."),
     "exe.folder": ("{path} es una carpeta; elige el fichero .exe.", "{path} is a folder; choose the .exe file."),
     "exe.missing": ("Elige el ejecutable sin DRM.", "Choose the executable without DRM."),
-    "exe.searching": ("Buscando en Descargas, Escritorio, Documentos y la carpeta del juego…",
-                      "Looking in Downloads, Desktop, Documents and the game's folder…"),
+    "exe.searching": ("Buscando el ejecutable compatible…", "Looking for the matching executable…"),
     "exe.not_found": ("No lo he encontrado. Elígelo con «Elegir…».", "Not found. Choose it with “Choose…”."),
     "exe.suggested": ("Posibles ficheros encontrados: {n}. Despliega la lista de arriba para elegir uno.",
                       "Possible files found: {n}. Open the list above to pick one."),
@@ -129,6 +128,7 @@ T: dict[str, tuple[str, str]] = {
                               "restart Docker Desktop."),
     "docker.podman": ("Usando podman: funciona igual en teoría, pero sólo se ha probado con Docker.",
                       "Using podman: it should work the same, but only Docker has been tested."),
+    "build.source": ("Código de compilación en {path}", "Build sources from {path}"),
     "image.present": ("Imagen de herramientas lista ({ref})", "Tool image ready ({ref})"),
     "image.absent": ("Falta la imagen de herramientas (~230 MB de descarga, una sola vez).",
                      "The tool image is missing (~230 MB to download, once)."),
@@ -216,8 +216,7 @@ T: dict[str, tuple[str, str]] = {
                            "8 GiB of memory. You can leave it working: the computer will not sleep meanwhile."),
     "page.options.folder": ("Carpeta del resultado:", "Result folder:"),
     "page.options.advanced": ("Opciones avanzadas", "Advanced options"),
-    "page.options.steam": ("Incluir Steam Cloud (sincronizar partidas desde la consola)",
-                           "Include Steam Cloud (sync saves from the console)"),
+    "page.options.steam": ("Incluir Steam Workshop y Steam Cloud", "Include Steam Workshop and Steam Cloud"),
     "page.options.steam_warning": ("La consola se conecta a Steam como un cliente NO oficial, con un token que "
                                    "queda en texto plano en la SD. Lee STEAM-CLOUD.md antes de activarlo.",
                                    "The console signs in to Steam as an UNOFFICIAL client, with a token kept in "

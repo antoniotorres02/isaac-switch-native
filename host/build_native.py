@@ -66,7 +66,10 @@ PROFILES = {
 
 # What --no-steam leaves out. Nothing outside native_switch.c calls these, and
 # it compiles those calls out with ISAAC_NO_STEAM.
-STEAM_SOURCES = {"native_steamcm.c", "native_steamproto.c", "native_steamsync.c", "native_steamauth.c",
+WORKSHOP_SOURCES = {"native_workshop_browser.c", "native_workshop_media.c",
+                    "native_steamworkshop.c", "native_steamcdn.c",
+                    "native_modmanager.c", "native_modsync.c"}
+STEAM_SOURCES = WORKSHOP_SOURCES | {"native_steamcm.c", "native_steamproto.c", "native_steamsync.c", "native_steamauth.c",
                  "native_qr.c", "native_sha1.c", "native_zip.c"}
 
 # Nintendo Switch NRO: devkitA64/libnx inside the SDK image pinned below
@@ -269,8 +272,7 @@ def main() -> int:
     ap.add_argument("--extra-patches", type=Path,
                     help="also apply this directory's *.patch after patches/ (work in progress; use with --out)")
     ap.add_argument("--no-steam", action="store_true",
-                    help="leave out everything that talks to Steam: Cloud sync, sign-in, ownership check "
-                         "and the network code behind them (variant <profile>-nosteam unless --tag says otherwise)")
+                    help="leave out Steam Cloud, Workshop, sign-in, ownership checks and their network code (variant <profile>-nosteam unless --tag says otherwise)")
     ap.add_argument("--lift-opt", action="store_true",
                     help="rewrite the lifted TUs with lift_opt.py before compiling them")
     args = ap.parse_args()
@@ -373,7 +375,7 @@ def main() -> int:
             continue
         if s.name == "native_window.c" and (not real_gl or switch):
             continue
-        if args.no_steam and s.name in STEAM_SOURCES:
+        if (args.no_steam and s.name in STEAM_SOURCES) or (not switch and s.name in WORKSHOP_SOURCES):
             continue
         objs.append(add(s, host_flags, "native_"))
     lift_flags = ["-std=gnu11", "-w"] + prof["lift"] + COMMON + inc + args.lift_flags.split()
@@ -412,7 +414,9 @@ def main() -> int:
                   # the launch screen's text (native_launcher.c); FreeType and
                   # HarfBuzz need each other
                   "-Wl,--start-group", "-lfreetype", "-lharfbuzz", "-Wl,--end-group",
-                  "-lpng16", "-lbz2", "-lstdc++", "-lnx", "-lpthread", "-lz", "-lm"])
+                  "-lpng16", "-lbz2"]
+               + ([] if args.no_steam else ["-ljpeg", "-llzma", "-lzstd"])
+               + ["-lstdc++", "-lnx", "-lpthread", "-lz", "-lm"])
     else:
         exe = out / variant / "isaac_native"
         r = sh([args.cc] + prof["ld"] + args.ld_flags.split() + ["-rdynamic", "-o", str(exe)] + [str(o) for o in objs]

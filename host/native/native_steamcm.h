@@ -74,6 +74,16 @@ int isaac_steamcm_webapi(void *user, const char *iface, const char *method,
                          void *resp, size_t cap, size_t *resp_len, int *eresult,
                          char *err, size_t errcap);
 
+/* Workshop operations share the open authenticated CM, TLS and buffers.
+ * The caller owns the network exclusively until transport.close(). */
+int isaac_steamcm_service(const char *, const void *, size_t, void *, size_t,
+                          size_t *, char *, size_t);
+int isaac_steamcm_depot_key(uint32_t app, uint32_t depot, uint8_t key[32], char *, size_t);
+unsigned isaac_steamcm_cell(void);
+void isaac_steamcm_set_cancel(int (*cancel)(void *), void *user);
+int isaac_steamcm_https_get(const char *host, const char *path, void *, size_t,
+                            size_t *, int *, int (*cancel)(void *), void *, char *, size_t);
+
 /* Largest save the transport accepts, and the buffers it needs. */
 #define ISAAC_STEAMCM_MAX_FILE (1u << 20)
 

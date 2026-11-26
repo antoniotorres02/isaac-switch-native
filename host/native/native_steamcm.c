@@ -105,6 +105,28 @@ static void set_err(char *err, size_t cap, const char *fmt, ...) {
     va_end(ap);
 }
 
+/* A Workshop worker may cancel between TLS reads, while cloud calls keep
+ * their existing blocking I/O mode. All callers already serialize the CM. */
+static int (*g_cancel)(void *);
+static void *g_cancel_user;
+
+void isaac_steamcm_set_cancel(int (*cancel)(void *), void *user) {
+    g_cancel = cancel;
+    g_cancel_user = user;
+}
+
+static int net_cancelled(void) {
+    return g_cancel && g_cancel(g_cancel_user);
+}
+
+static uint64_t monotonic_ms(void) {
+    return armTicksToNs(armGetSystemTick()) / 1000000;
+}
+
+#define SSL_WOULD_BLOCK MAKERESULT(123, 204)
+#define SSL_TIMEOUT MAKERESULT(123, 205)
+#define SSL_CLOSE_NOTIFY MAKERESULT(123, 1501)
+
 /* ---- TLS through libnx's ssl service ------------------------------------- */
 
 /* `fd` is our socket; `ssl_fd` the descriptor the ssl service hands back for
@@ -113,7 +135,7 @@ typedef struct {
     int fd, ssl_fd;
     SslContext ctx;
     SslConnection conn;
-    int have_ctx, have_conn;
+    int have_ctx, have_conn, timeout_ms;
 } isaac_tls;
 
 static void tls_init(isaac_tls *t) {
@@ -154,7 +176,7 @@ static int tcp_connect(const char *host, int port, int timeout_ms, char *err, si
         return -1;
     }
     int fd = -1;
-    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+    for (struct addrinfo *ai = res; ai && !net_cancelled(); ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) continue;
         struct timeval tv;
@@ -167,7 +189,17 @@ static int tcp_connect(const char *host, int port, int timeout_ms, char *err, si
         rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
         if (rc != 0 && errno == EINPROGRESS) {
             struct pollfd pfd = { fd, POLLOUT, 0 };
-            if (poll(&pfd, 1, timeout_ms) == 1) {
+            int ready = 0;
+            uint64_t deadline = monotonic_ms() + timeout_ms;
+            while (!net_cancelled()) {
+                uint64_t now = monotonic_ms();
+                if (now >= deadline) break;
+                int wait = (int)(deadline - now);
+                if (g_cancel && wait > 100) wait = 100;
+                ready = poll(&pfd, 1, wait);
+                if (ready != 0) break;
+            }
+            if (ready == 1) {
                 int soerr = 0;
                 socklen_t len = sizeof soerr;
                 getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &len);
@@ -188,6 +220,8 @@ static int tcp_connect(const char *host, int port, int timeout_ms, char *err, si
 
 static int tls_open(isaac_tls *t, const char *host, int port, int timeout_ms, char *err, size_t errcap) {
     tls_init(t);
+    t->timeout_ms = timeout_ms;
+    if (net_cancelled()) return -1;
     t->fd = tcp_connect(host, port, timeout_ms, err, errcap);
     if (t->fd < 0) return -1;
     if (R_FAILED(sslCreateContext(&t->ctx, SslVersion_Auto))) {
@@ -219,9 +253,24 @@ static int tls_open(isaac_tls *t, const char *host, int port, int timeout_ms, ch
     }
     /* PeerCa | HostName: the console's own root store decides, and the name has
      * to match, so a hijacked DNS answer is not silently accepted. */
-    sslConnectionSetVerifyOption(&t->conn, SslVerifyOption_PeerCa | SslVerifyOption_HostName);
+    if (R_FAILED(sslConnectionSetVerifyOption(&t->conn, SslVerifyOption_PeerCa | SslVerifyOption_HostName))) {
+        set_err(err, errcap, "TLS verification setup failed");
+        tls_close(t);
+        return -1;
+    }
+    if (g_cancel && R_FAILED(sslConnectionSetIoMode(&t->conn, SslIoMode_NonBlocking))) {
+        set_err(err, errcap, "Nonblocking TLS setup failed");
+        tls_close(t);
+        return -1;
+    }
     u32 cert_size = 0, total_certs = 0;
-    Result hs = sslConnectionDoHandshake(&t->conn, &cert_size, &total_certs, NULL, 0);
+    uint64_t deadline = monotonic_ms() + timeout_ms;
+    Result hs;
+    for (;;) {
+        hs = sslConnectionDoHandshake(&t->conn, &cert_size, &total_certs, NULL, 0);
+        if (!g_cancel || hs != SSL_WOULD_BLOCK || net_cancelled() || monotonic_ms() >= deadline) break;
+        svcSleepThread(20000000);
+    }
     if (R_FAILED(hs)) {
         set_err(err, errcap, "TLS handshake with %s failed (0x%x)", host, (unsigned)hs);
         tls_close(t);
@@ -230,22 +279,41 @@ static int tls_open(isaac_tls *t, const char *host, int port, int timeout_ms, ch
     return 0;
 }
 
+static int tls_poll(isaac_tls *t, u32 event, uint64_t until) {
+    if (net_cancelled() || monotonic_ms() >= until) return -1;
+    u32 ready = 0;
+    Result rc = sslConnectionPoll(&t->conn, event, &ready, 100);
+    return R_SUCCEEDED(rc) || rc == SSL_TIMEOUT || rc == SSL_WOULD_BLOCK ? 0 : -1;
+}
+
 static int tls_write_all(isaac_tls *t, const void *data, size_t len) {
     const uint8_t *p = data;
-    while (len) {
+    uint64_t deadline = monotonic_ms() + t->timeout_ms;
+    while (len && !net_cancelled()) {
         u32 chunk = len > 16384 ? 16384 : (u32)len, wrote = 0;
-        if (R_FAILED(sslConnectionWrite(&t->conn, p, chunk, &wrote)) || !wrote) return -1;
+        Result rc = sslConnectionWrite(&t->conn, p, chunk, &wrote);
+        if (g_cancel && rc == SSL_WOULD_BLOCK) {
+            if (tls_poll(t, SslPollEvent_Write, deadline)) return -1;
+            continue;
+        }
+        if (R_FAILED(rc) || !wrote || wrote > chunk) return -1;
         p += wrote;
         len -= wrote;
     }
-    return 0;
+    return len ? -1 : 0;
 }
 
 /* >0 bytes read, 0 on a clean close, -1 on error/timeout. */
 static int tls_read(isaac_tls *t, void *buf, size_t cap) {
-    u32 got = 0;
-    if (R_FAILED(sslConnectionRead(&t->conn, buf, (u32)cap, &got))) return -1;
-    return (int)got;
+    uint64_t deadline = monotonic_ms() + t->timeout_ms;
+    while (!net_cancelled()) {
+        u32 got = 0;
+        Result rc = sslConnectionRead(&t->conn, buf, (u32)cap, &got);
+        if (R_SUCCEEDED(rc)) return (int)got;
+        if (rc == SSL_CLOSE_NOTIFY) return 0;
+        if (!g_cancel || rc != SSL_WOULD_BLOCK || tls_poll(t, SslPollEvent_Read, deadline)) break;
+    }
+    return -1;
 }
 
 /* ---- WebSocket (RFC 6455, binary frames, client side) --------------------- */
@@ -440,11 +508,58 @@ typedef struct {
     int eresult;    /* X-eresult, which Web API calls answer with */
 } isaac_http;
 
-static int http_request(const char *host, const char *method, const char *path,
+typedef struct {
+    isaac_tls *tls;
+    uint8_t *buf;
+    size_t pos, len;
+    int (*cancel)(void *);
+    void *user;
+} http_reader;
+
+static int http_read(http_reader *r, void *out, size_t n) {
+    uint8_t *dst = out;
+    while (n) {
+        if (r->cancel && r->cancel(r->user)) return -1;
+        if (r->pos == r->len) {
+            int got = tls_read(r->tls, r->buf, HTTP_HDR_MAX);
+            if (got <= 0) return -1;
+            r->len = (size_t)got;
+            r->pos = 0;
+        }
+        size_t take = r->len - r->pos;
+        if (take > n) take = n;
+        memcpy(dst, r->buf + r->pos, take);
+        dst += take;
+        r->pos += take;
+        n -= take;
+    }
+    return 0;
+}
+
+static int http_chunk_size(http_reader *r, size_t *size) {
+    char line[96];
+    for (size_t i = 0; i < sizeof line - 1; ++i) {
+        if (http_read(r, line + i, 1) != 0) return -1;
+        if (line[i] != '\n') continue;
+        if (i < 2 || line[i - 1] != '\r') return -1;
+        line[i - 1] = 0;
+        char *end;
+        errno = 0;
+        unsigned long long n = strtoull(line, &end, 16);
+        if (line == end || (*end && *end != ';') || errno || n > SIZE_MAX) return -1;
+        *size = (size_t)n;
+        return 0;
+    }
+    return -1;
+}
+
+static int http_request_ex(const char *host, const char *method, const char *path,
                         const char *const *extra, size_t nextra,
                         const void *body, size_t body_len,
                         void *resp, size_t cap, isaac_http *out,
-                        int timeout_ms, char *err, size_t errcap) {
+                        int timeout_ms, char *err, size_t errcap,
+                        int (*cancel)(void *), void *user) {
+    if (cancel && cancel(user)) return -1;
     isaac_tls t;
     if (tls_open(&t, host, 443, timeout_ms, err, errcap) != 0) return -1;
     static char req[16384];    /* one network user at a time; signed URLs run long */
@@ -493,7 +608,7 @@ static int http_request(const char *host, const char *method, const char *path,
     /* Headers, then the body (Content-Length or chunked). */
     size_t hlen = 0;
     int header_end = -1;
-    while (hlen < HTTP_HDR_MAX) {
+    while (hlen + 1 < HTTP_HDR_MAX && (!cancel || !cancel(user))) {
         int got = tls_read(&t, g_http_hdr + hlen, HTTP_HDR_MAX - hlen - 1);
         if (got <= 0) break;
         hlen += (size_t)got;
@@ -527,62 +642,57 @@ static int http_request(const char *host, const char *method, const char *path,
         line = next;
     }
 
-    size_t body_have = hlen - (size_t)header_end;
-    uint8_t *rest = g_http_hdr + header_end;
     size_t total = 0;
+    http_reader reader = { &t, g_http_hdr, (size_t)header_end, hlen, cancel, user };
+    int rc = 0;
     if (chunked) {
-        /* De-chunk into resp; S3 uses this for some objects. */
-        uint8_t *chunk = g_ws_buf;
-        size_t chunk_len = body_have;
-        if (chunk_len > WS_RECV_MAX) chunk_len = WS_RECV_MAX;
-        memcpy(chunk, rest, chunk_len);
-        size_t pos = 0;
+        size_t chunk;
         for (;;) {
-            while (pos < chunk_len && chunk[pos] != '\n') ++pos;
-            if (pos >= chunk_len) break;
-            size_t size = strtoul((char *)chunk + pos, NULL, 16);
-            ++pos;
-            while (pos + size + 2 > chunk_len) {          /* need more bytes */
-                if (chunk_len >= WS_RECV_MAX) break;
-                int got = tls_read(&t, chunk + chunk_len, WS_RECV_MAX - chunk_len);
-                if (got <= 0) break;
-                chunk_len += (size_t)got;
+            char end[2];
+            if (http_chunk_size(&reader, &chunk) != 0 || chunk > cap - total) {
+                rc = -1;
+                break;
             }
-            if (size == 0) break;
-            if (total + size > cap) {
-                tls_close(&t);
-                set_err(err, errcap, "%s %s: response too large", method, host);
-                return -1;
+            if (!chunk) break;
+            if (http_read(&reader, (uint8_t *)resp + total, chunk) != 0 ||
+                http_read(&reader, end, sizeof end) != 0 || memcmp(end, "\r\n", 2)) {
+                rc = -1;
+                break;
             }
-            memcpy((uint8_t *)resp + total, chunk + pos, size);
-            total += size;
-            pos += size;
-            while (pos < chunk_len && (chunk[pos] == '\r' || chunk[pos] == '\n')) ++pos;
+            total += chunk;
         }
+    } else if (content_length >= 0) {
+        total = (size_t)content_length;
+        rc = total > cap ? -1 : http_read(&reader, resp, total);
     } else {
-        if (content_length >= 0 && (size_t)content_length > cap) {
-            tls_close(&t);
-            set_err(err, errcap, "%s %s: response too large (%ld)", method, host, content_length);
-            return -1;
-        }
-        if (body_have > cap) body_have = cap;
-        memcpy(resp, rest, body_have);
-        total = body_have;
-        while ((content_length < 0 || total < (size_t)content_length) && total < cap) {
-            int got = tls_read(&t, (uint8_t *)resp + total, cap - total);
-            if (got <= 0) break;
-            total += (size_t)got;
+        total = reader.len - reader.pos;
+        if (total > cap) rc = -1;
+        else {
+            if (total) memcpy(resp, reader.buf + reader.pos, total);
+            for (;;) {
+                int n = tls_read(&t, reader.buf, HTTP_HDR_MAX);
+                if (cancel && cancel(user)) { rc = -1; break; }
+                if (n <= 0) break;
+                if ((size_t)n > cap - total) { rc = -1; break; }
+                memcpy((uint8_t *)resp + total, reader.buf, (size_t)n);
+                total += (size_t)n;
+            }
         }
     }
     tls_close(&t);
-    if (content_length >= 0 && !chunked && total != (size_t)content_length) {
-        set_err(err, errcap, "%s %s: short body (%zu of %ld)", method, host, total, content_length);
-        return -1;
-    }
     out->status = status;
     out->len = total;
     out->eresult = eresult;
-    return 0;
+    if (rc != 0) set_err(err, errcap, "%s %s: invalid, incomplete or oversized HTTP body", method, host);
+    return rc;
+}
+
+static int http_request(const char *host, const char *method, const char *path,
+                        const char *const *extra, size_t nextra, const void *body, size_t body_len,
+                        void *resp, size_t cap, isaac_http *out, int timeout_ms,
+                        char *err, size_t errcap) {
+    return http_request_ex(host, method, path, extra, nextra, body, body_len, resp, cap,
+                           out, timeout_ms, err, errcap, NULL, NULL);
 }
 
 /* ---- CM session ----------------------------------------------------------- */
@@ -591,6 +701,7 @@ typedef struct {
     isaac_tls tls;
     uint64_t steamid;
     uint64_t session_id;
+    unsigned cell;
     int heartbeat_seconds;
     int timeout_ms;
     time_t last_heartbeat;
@@ -627,6 +738,7 @@ static size_t cm_header(void *out, size_t cap, const char *method, uint64_t job)
 typedef struct {
     unsigned want_emsg;
     const char *want_method;
+    uint64_t want_job;
     int found;
     int eresult;
     size_t body_len;
@@ -639,6 +751,10 @@ static void cm_on_msg(void *user, const isaac_cmmsg *m) {
         if (!(w->want_emsg == ISAAC_EMSG_SERVICE_METHOD_RESPONSE &&
               m->emsg == ISAAC_EMSG_SERVICE_METHOD))
             return;
+    }
+    if (w->want_job) {
+        uint64_t target = isaac_pbr_uint(m->hdr, m->hlen, 11, UINT64_MAX);
+        if (target != UINT64_MAX && target != w->want_job) return;
     }
     if (w->want_method) {
         char name[80];
@@ -657,11 +773,11 @@ static void cm_on_msg(void *user, const isaac_cmmsg *m) {
 }
 
 /* Reads until the wanted message arrives, answering heartbeats meanwhile. */
-static int cm_wait_for(unsigned emsg, const char *method, int timeout_ms, cm_wait *out) {
-    cm_wait w = { emsg, method, 0, 2, 0 };
+static int cm_wait_for(unsigned emsg, const char *method, uint64_t job, int timeout_ms, cm_wait *out) {
+    cm_wait w = { emsg, method, job, 0, 2, 0 };
     time_t deadline = time(NULL) + timeout_ms / 1000;
     while (!w.found) {
-        if (time(NULL) > deadline) return -1;
+        if (net_cancelled() || time(NULL) > deadline) return -1;
         if (g_cm.heartbeat_seconds && time(NULL) - g_cm.last_heartbeat >= 5) {
             size_t hlen = cm_header(g_hdr_buf, sizeof g_hdr_buf, NULL, 0);
             if (hlen && cm_send(ISAAC_EMSG_CLIENT_HEARTBEAT, g_hdr_buf, hlen, NULL, 0) == 0)
@@ -680,12 +796,73 @@ static int cm_wait_for(unsigned emsg, const char *method, int timeout_ms, cm_wai
 }
 
 static int cm_call(const char *method, const void *req, size_t req_len, int timeout_ms) {
-    size_t hlen = cm_header(g_hdr_buf, sizeof g_hdr_buf, method, rand64());
+    uint64_t job = rand64() | 1;
+    size_t hlen = cm_header(g_hdr_buf, sizeof g_hdr_buf, method, job);
     if (!hlen) return -1;
     if (cm_send(ISAAC_EMSG_SERVICE_METHOD_CALL_FROM_CLIENT, g_hdr_buf, hlen, req, req_len) != 0)
         return -1;
-    if (cm_wait_for(ISAAC_EMSG_SERVICE_METHOD_RESPONSE, method, timeout_ms, NULL) != 0) return -1;
+    if (cm_wait_for(ISAAC_EMSG_SERVICE_METHOD_RESPONSE, method, job, timeout_ms, NULL) != 0) return -1;
     return g_cm.reply_eresult;
+}
+
+int isaac_steamcm_service(const char *method, const void *req, size_t req_len,
+                          void *reply, size_t cap, size_t *len, char *err, size_t errcap) {
+    int result = cm_call(method, req, req_len, g_cm.timeout_ms);
+    if (result != ERESULT_OK || g_cm.reply_len > cap) {
+        set_err(err, errcap, "%s failed (Steam result %d)", method, result);
+        return -1;
+    }
+    memcpy(reply, g_reply_buf, g_cm.reply_len);
+    *len = g_cm.reply_len;
+    return 0;
+}
+
+unsigned isaac_steamcm_cell(void) { return g_cm.cell; }
+
+int isaac_steamcm_depot_key(uint32_t app, uint32_t depot, uint8_t key[32], char *err, size_t cap) {
+    uint8_t body[32];
+    isaac_pbw w;
+    isaac_pbw_init(&w, body, sizeof body);
+    isaac_pbw_varint(&w, 1, depot);
+    isaac_pbw_varint(&w, 2, app);
+    uint64_t job = rand64() | 1;
+    size_t hlen = cm_header(g_hdr_buf, sizeof g_hdr_buf, NULL, job);
+    if (!hlen || cm_send(5438, g_hdr_buf, hlen, body, w.len) != 0 ||
+        cm_wait_for(5439, NULL, job, g_cm.timeout_ms, NULL) != 0) {
+        set_err(err, cap, "No answer to the Workshop depot key request");
+        return -1;
+    }
+    uint64_t result = isaac_pbr_uint(g_reply_buf, g_cm.reply_len, 1, 2);
+    if (result == ERESULT_OK && isaac_pbr_uint(g_reply_buf, g_cm.reply_len, 2, 0) == depot) {
+        isaac_pbr reader;
+        isaac_pbfield f;
+        isaac_pbr_init(&reader, g_reply_buf, g_cm.reply_len);
+        while (isaac_pbr_next(&reader, &f) > 0) {
+            if (f.field == 3 && f.wire == 2 && f.len == 32) {
+                memcpy(key, f.bytes, 32);
+                memset(g_reply_buf, 0, g_cm.reply_len);
+                return 0;
+            }
+        }
+    }
+    set_err(err, cap, "Workshop depot key unavailable (Steam result %llu)", (unsigned long long)result);
+    return -1;
+}
+
+int isaac_steamcm_https_get(const char *host, const char *path, void *out, size_t cap,
+                            size_t *len, int *status, int (*cancel)(void *), void *user,
+                            char *err, size_t errcap) {
+    if (g_cm.heartbeat_seconds && time(NULL) - g_cm.last_heartbeat >= 5) {
+        size_t hlen = cm_header(g_hdr_buf, sizeof g_hdr_buf, NULL, 0);
+        if (hlen && cm_send(ISAAC_EMSG_CLIENT_HEARTBEAT, g_hdr_buf, hlen, NULL, 0) == 0)
+            g_cm.last_heartbeat = time(NULL);
+    }
+    isaac_http http = {0};
+    int rc = http_request_ex(host, "GET", path, NULL, 0, NULL, 0, out, cap, &http,
+                             g_cm.timeout_ms ? g_cm.timeout_ms : 5000, err, errcap, cancel, user);
+    *status = http.status;
+    *len = http.len;
+    return rc;
 }
 
 /* The CM list: one HTTPS call, then the first host that answers a websocket.
@@ -695,12 +872,13 @@ static int cm_hosts(char hosts[][64], int max, char *err, size_t errcap) {
     isaac_http http;
     if (http_request("api.steampowered.com", "GET",
                      "/ISteamDirectory/GetCMListForConnect/v1/?cellid=0&cmtype=websockets",
-                     NULL, 0, NULL, 0, g_reply_buf, REPLY_MAX, &http, 15000, err, errcap) != 0)
+                     NULL, 0, NULL, 0, g_reply_buf, REPLY_MAX - 1, &http, g_cancel ? 5000 : 15000, err, errcap) != 0)
         return 0;
     if (http.status != 200) {
         set_err(err, errcap, "CM list: HTTP %d", http.status);
         return 0;
     }
+    g_reply_buf[http.len] = 0;
     int count = 0;
     const char *p = (const char *)g_reply_buf;
     const char *end = p + http.len;
@@ -760,7 +938,7 @@ static int cm_logon(const char *token, char *err, size_t errcap) {
         return -1;
     }
     cm_wait reply;
-    if (cm_wait_for(ISAAC_EMSG_CLIENT_LOGON_RESPONSE, NULL, 30000, &reply) != 0) {
+    if (cm_wait_for(ISAAC_EMSG_CLIENT_LOGON_RESPONSE, NULL, 0, 30000, &reply) != 0) {
         set_err(err, errcap, "no logon response");
         return -1;
     }
@@ -1115,7 +1293,7 @@ static int cm_owns(void *state, uint32_t appid, char *err, size_t errcap) {
         return -1;
     }
     cm_wait reply;
-    if (cm_wait_for(ISAAC_EMSG_CLIENT_GET_APP_OWNERSHIP_TICKET_RESPONSE, NULL, 10000, &reply) != 0) {
+    if (cm_wait_for(ISAAC_EMSG_CLIENT_GET_APP_OWNERSHIP_TICKET_RESPONSE, NULL, 0, 10000, &reply) != 0) {
         set_err(err, errcap, "no answer to the ownership request");
         return -1;
     }
@@ -1165,7 +1343,7 @@ int isaac_steamcm_open(uint64_t steamid, const char *token, int timeout_ms,
     }
     say("CM list: %d host(s)", count);
     char last[160] = "no CM accepted the connection";
-    for (int i = 0; i < count; ++i) {
+    for (int i = 0; i < count && !net_cancelled(); ++i) {
         char host[64];
         snprintf(host, sizeof host, "%s", hosts[i]);
         char *colon = strrchr(host, ':');
@@ -1174,6 +1352,11 @@ int isaac_steamcm_open(uint64_t steamid, const char *token, int timeout_ms,
             *colon = 0;
             port = atoi(colon + 1);
         }
+        size_t name_len = strlen(host);
+        if (port < 1 || port > 65535 ||
+            strspn(host, "abcdefghijklmnopqrstuvwxyz0123456789.-") != name_len ||
+            !((name_len > 16 && !strcmp(host + name_len - 16, ".steamserver.net")) ||
+              (name_len > 17 && !strcmp(host + name_len - 17, ".steampowered.com")))) continue;
         if (ws_open(&g_cm.tls, host, "/cmsocket/", port, timeout_ms, err, errcap) != 0) {
             snprintf(last, sizeof last, "%s: %s", host, err ? err : "connect failed");
             say("%s", last);
@@ -1190,6 +1373,7 @@ int isaac_steamcm_open(uint64_t steamid, const char *token, int timeout_ms,
         }
         say("logged on (cell %d, heartbeat %d s)",
             (int)isaac_pbr_uint(g_reply_buf, g_cm.reply_len, 7, 0), g_cm.heartbeat_seconds);
+        g_cm.cell = isaac_pbr_uint(g_reply_buf, g_cm.reply_len, 7, 0);
         out->state = &g_cm;
         out->enumerate = cloud_enumerate;
         out->download = cloud_download;
