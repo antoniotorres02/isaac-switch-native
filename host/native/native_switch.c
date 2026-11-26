@@ -146,6 +146,7 @@ static struct { int held, play, r_down, restarted; uint64_t since, start_until; 
  * is missing; edit it to change them (key=0 or key=1). */
 static int g_switch_glyphs = 1;   /* Switch button glyphs (native_glyphs.c)  */
 static int g_a_accepts = 1;       /* menus by label: A accepts, B goes back */
+static int g_skip_reflections;   /* experimental: skip rendering during the water reflection pass */
 static int g_frame_skip = 1;      /* in play: 0 every frame, 1 when late, 2 always (ISAAC_RENDER_GATE) */
 static int g_render_thread = 1;   /* GL on its own core (native_glq.c, ISAAC_NATIVE_GLQ) */
 #ifndef ISAAC_NO_STEAM
@@ -244,6 +245,7 @@ static void load_settings(void) {
         if (!strcmp(k, "switch_glyphs")) g_switch_glyphs = atoi(v) != 0;
         else if (!strcmp(k, "a_accepts")) g_a_accepts = atoi(v) != 0;
         else if (!strcmp(k, "frame_skip")) g_frame_skip = atoi(v);
+        else if (!strcmp(k, "skip_reflections")) g_skip_reflections = atoi(v) != 0;
         else if (!strcmp(k, "render_thread")) g_render_thread = atoi(v) != 0;
 #ifndef ISAAC_NO_STEAM
         else if (!strcmp(k, "steam_sync")) g_steam_sync = atoi(v) != 0;
@@ -255,6 +257,7 @@ static void load_settings(void) {
         else if (!strcmp(k, "zoom")) { g_zoom = atoi(v); has_zoom = 1; }
     }
     fclose(f);
+    if (g_frame_skip < 0 || g_frame_skip > 2) g_frame_skip = 1;
     if (g_zoom < 0) g_zoom = 0;
     if (g_zoom > 100) g_zoom = 100;
     /* Add the zoom setting for older installations that lack it. */
@@ -1143,12 +1146,25 @@ static void steam_sync_run(int push) {
 static void open_game_options(isaac_options_menu *menu) {
     if (isaac_options_read(menu, ROOT "/saves", g_guest))
         snprintf(menu->status, sizeof menu->status, "Could not read all settings from the SD card.");
+    menu->values[ISAAC_OPTION_FRAME_CADENCE] = g_frame_skip;
+    menu->values[ISAAC_OPTION_SKIP_REFLECTIONS] = g_skip_reflections;
 }
 
 static int game_options_input(isaac_options_menu *menu, uint64_t down) {
     if (down & HidNpadButton_B) return 0;
     if (down & HidNpadButton_A) {
-        if (!isaac_options_write(menu, ROOT "/saves", g_guest)) return 0;
+        if (isaac_options_write(menu, ROOT "/saves", g_guest) == 0) {
+            int cadence = menu->values[ISAAC_OPTION_FRAME_CADENCE];
+            int reflections = menu->values[ISAAC_OPTION_SKIP_REFLECTIONS];
+            int frame_ok = cadence == g_frame_skip || !isaac_port_setting(ROOT, "frame_skip", cadence);
+            if (frame_ok) {
+                g_frame_skip = cadence;
+                if (reflections == g_skip_reflections || !isaac_port_setting(ROOT, "skip_reflections", reflections)) {
+                    g_skip_reflections = reflections;
+                    return 0;
+                }
+            }
+        }
         snprintf(menu->status, sizeof menu->status, "Could not save all changes to the SD card.");
     } else if (down & HidNpadButton_X) {
         isaac_options_defaults(menu);
@@ -1638,7 +1654,7 @@ int main(int argc, char **argv) {
             setenv("ISAAC_SAVE_DIR", ROOT "/saves", 1);
             mods = 1;                    /* play mode: the instance's mods/ is mounted */
             setenv("ISAAC_NATIVE_WALL_CLOCK", "1", 1);   /* real time, as the web build plays */
-            setenv("ISAAC_RENDER_GATE", g_frame_skip == 2 ? "4" : g_frame_skip == 1 ? "1" : "0", 0);
+            setenv("ISAAC_SWITCH_PERFORMANCE_DEFAULTS", "1", 1);
             /* Full screen: a window of 540 rows down to 480 (zoom=100), 16:9,
              * which the engine fills with 270 down to 240 points (patch 0008). */
             static char view[24];
@@ -1670,6 +1686,10 @@ int main(int argc, char **argv) {
         if (!play) {
             status = "EXIT";
         } else {
+            if (!automatic) {
+                setenv("ISAAC_RENDER_GATE", g_frame_skip == 2 ? "4" : g_frame_skip == 1 ? "1" : "0", 0);
+                setenv("ISAAC_NATIVE_SKIP_REFLECTIONS", g_skip_reflections ? "1" : "0", 0);
+            }
             stage("running the game");
             int rc = run_game();
             if (g_exit_tick) stage("game closed %u ms after HOME -> Close", since_exit_request());

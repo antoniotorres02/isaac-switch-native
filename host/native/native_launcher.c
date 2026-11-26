@@ -832,14 +832,18 @@ static void draw_options(const isaac_options_menu *menu) {
         text(263, y + 19, spec->label, 17, BOLD, C_TEXT);
         text(263, y + 35, spec->detail, 14, REG, C_TEXT2);
         char value[32];
-        if (spec->max == 1) snprintf(value, sizeof value, "%s", menu->values[i] ? "On" : "Off");
+        if (i == ISAAC_OPTION_FRAME_CADENCE) {
+            static const char *cadence[] = {"60 FPS", "Adaptive", "30 FPS"};
+            int mode = menu->values[i];
+            snprintf(value, sizeof value, "%s", cadence[mode >= 0 && mode <= 2 ? mode : 1]);
+        } else if (spec->max == 1) snprintf(value, sizeof value, "%s", menu->values[i] ? "On" : "Off");
         else snprintf(value, sizeof value, "%d×", menu->values[i]);
         text(1010 - text_w(value, 20, BOLD, 0), y + 29, value, 20, BOLD, C_TEXT);
     }
     if (menu->status[0]) text(255, 618, menu->status, 15, REG, C_WARN);
     int x = dialog_hint(1028, 636, "B", "Discard");
     x = dialog_hint(x, 636, "A", "Save");
-    x = dialog_hint(x, 636, "X", "Reset defaults");
+    x = dialog_hint(x, 636, "X", "Performance defaults");
     x = controller_hint(x, 636, "<", ">", "Change");
     controller_hint(x, 636, "↑", "↓", "Select");
 }

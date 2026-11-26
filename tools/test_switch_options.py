@@ -13,7 +13,7 @@ EFFECTS = Path("resources/config.ini")
 
 
 class Menu(ctypes.Structure):
-    _fields_ = [("values", ctypes.c_int * 9), ("changed", ctypes.c_uint),
+    _fields_ = [("values", ctypes.c_int * 11), ("changed", ctypes.c_uint),
                 ("selected", ctypes.c_int), ("status", ctypes.c_char * 96)]
 
 
@@ -34,7 +34,7 @@ class SwitchOptionsTests(unittest.TestCase):
             menu = Menu()
             args = (ctypes.byref(menu), os.fsencode(saves), os.fsencode(guest))
             self.assertEqual(native.isaac_options_read(*args), 0)
-            self.assertEqual(list(menu.values), [2, 1, 1, 1, 1, 1, 1, 1, 1])
+            self.assertEqual(list(menu.values), [1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0])
             settings = root / "settings.ini"
             settings.write_bytes(b"# controller\nframe_skip=1\na_accepts=1")
             native.isaac_port_setting.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
@@ -45,7 +45,7 @@ class SwitchOptionsTests(unittest.TestCase):
             menu.changed = 1 << 1
             self.assertEqual(native.isaac_options_write(*args), 0)
             options = saves / OPTIONS
-            self.assertIn(b"MaxRenderScale=2\r\n", options.read_bytes())
+            self.assertIn(b"MaxRenderScale=1\r\n", options.read_bytes())
             self.assertIn(b"VSync=0\r\n", options.read_bytes())
             self.assertIn(b"Fullscreen=0\r\n", options.read_bytes())
 
@@ -54,7 +54,7 @@ class SwitchOptionsTests(unittest.TestCase):
             self.assertEqual(native.isaac_options_write(*args), 0)
             new_graphics = saves / EFFECTS
             self.assertIn(b"EnableCaustics=1\r\n", new_graphics.read_bytes())
-            self.assertIn(b"EnableBloom=1\r\n", new_graphics.read_bytes())
+            self.assertIn(b"EnableBloom=0\r\n", new_graphics.read_bytes())
             self.assertIn(b"EnableWaterSurface=1\r\n", new_graphics.read_bytes())
             new_graphics.unlink()
 
@@ -71,16 +71,16 @@ class SwitchOptionsTests(unittest.TestCase):
             native.isaac_options_defaults(ctypes.byref(menu))
             self.assertEqual(native.isaac_options_write(*args), 0)
             self.assertFalse(menu.changed)
-            self.assertIn(b"MaxRenderScale=2\r\n", options.read_bytes())
+            self.assertIn(b"MaxRenderScale=1\r\n", options.read_bytes())
             self.assertIn(b"; comment\r\n", options.read_bytes())
             self.assertIn(long_comment, options.read_bytes())
             self.assertIn(b"MusicVolume=0.4\r\n", options.read_bytes())
             self.assertTrue(options.read_bytes().endswith(b"[Other]\r\nMaxRenderScale=37"))
-            self.assertIn("EnableBloom=1", (saves / EFFECTS).read_text())
+            self.assertIn("EnableBloom=0", (saves / EFFECTS).read_text())
             self.assertIn("ExistingEffect=12", (saves / EFFECTS).read_text())
             self.assertIn("EnableBloom=1", graphics.read_text())
             self.assertEqual(native.isaac_options_read(*args), 0)
-            self.assertEqual(list(menu.values), [2, 1, 1, 1, 1, 1, 1, 1, 1])
+            self.assertEqual(list(menu.values), [1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0])
             backup = options.with_name(options.name + ".tmp-backup")
             options.rename(backup)
             native.isaac_options_recover.argtypes = [ctypes.c_char_p]

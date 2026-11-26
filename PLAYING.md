@@ -54,9 +54,16 @@ The NRO contains the memory image of your executable. Do not share it.
 
 Press **ZL** on the launcher to open **Options**. Hold up or down to move
 through settings, then press left or right to change the selected value.
-Press **A** to save, **B** to discard, or **X** to reset the values shown in
-this menu to the game's defaults. The changes take effect at the next game
-launch.
+Press **A** to save, **B** to discard,, or **X** to apply the performance preset.
+Changes take effect at the next game launch. The preset uses 1× internal
+render scale and turns off bloom, shockwaves, moving water lights and room
+color filters. It keeps room lighting and the water surface.
+
+**Frame skip** sets presentation to **60 FPS**, **Adaptive**, or **30 FPS**.
+**Adaptive** skips extra frames when the game falls behind. **30 FPS**
+always skips the in-between frames. **Skip water reflections** is
+experimental and starts off. It skips the reflected entities in flooded
+rooms, which can change how some mods look.
 
 The menu edits the game's `options.ini` in the save folder. Graphics
 effects are saved in a local `saves/resources/config.ini` override. Back

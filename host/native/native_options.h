@@ -3,7 +3,9 @@
 
 #define ISAAC_OPTIONS_REL "documents/my games/binding of isaac repentance+/options.ini"
 #define ISAAC_EFFECTS_REL "resources/config.ini"
-#define ISAAC_OPTION_COUNT 9
+#define ISAAC_OPTION_FRAME_CADENCE 9
+#define ISAAC_OPTION_SKIP_REFLECTIONS 10
+#define ISAAC_OPTION_COUNT 11
 
 typedef struct {
     const char *key, *label, *detail;

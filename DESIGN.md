@@ -733,3 +733,18 @@ Tried and dropped:
 - A guarded guest map on Horizon (today it is taken from the heap with no
   guard page above it).
 - Copying saves from the Switch back to a PC.
+
+## Experimental reflection skipping
+
+In Steam v1.9.7.19, the room renderer enters `RENDER_WATER_REFLECT` before
+recording reflected entity geometry. When the player enables
+`skip_reflections=1`, the lifted hook at `0x82a0a7` jumps to the existing
+batch submission and cleanup at `0x82a200`. This bypasses reflection
+geometry and callbacks specific to that pass. Other room drawing and the
+game update still run. An IsaacNX+ Linux GLES run in Flooded Caves skipped
+1,470 reflection passes with zero GL errors. Switch performance and mod
+compatibility still need hardware testing.
+
+The AArch64 NEON video upload patch reduces the work to widen RGB frames
+to RGBA. Boss-ending cutscenes can still run slowly on Switch. Profiling
+the lifted Theora decoder and SD reads is needed to find the remaining cost.

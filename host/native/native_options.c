@@ -20,7 +20,11 @@ const char isaac_default_options[] =
     "MultiplayerColorSet=0\r\nOnlineInputDelay=3\r\nItemInfoDisplayEnabled=0\r\n"
     "AcceptedPublicBeta_v1.9.7.17=1\r\nAcceptedPublicBeta_v1.9.7.19=1\r\nAcceptedDataCollectionDisclaimer=1\r\n"
     "EnableDebugConsole=0\r\nMaxScale=99\r\n"
+#ifdef __SWITCH__
+    "MaxRenderScale=1\r\n"
+#else
     "MaxRenderScale=2\r\n"
+#endif
     "VSync=1\r\nPauseOnFocusLost=1\r\n"
     "SteamCloud=0\r\nMouseControl=0\r\nBossHpOnBottom=1\r\nAnnouncerVoiceMode=0\r\nConsoleFont=0\r\n"
     "FadedConsoleDisplay=0\r\nSaveCommandHistory=1\r\nWindowWidth=960\r\nWindowHeight=540\r\n"
@@ -28,15 +32,19 @@ const char isaac_default_options[] =
     "EosCrossplay=0\r\n";
 
 const isaac_option_spec isaac_option_specs[ISAAC_OPTION_COUNT] = {
-    {"MaxRenderScale", "Internal render scale", "1 is fastest. Higher values sharpen text and small sprites.", 0, 1, 99, 2},
+    {"MaxRenderScale", "Internal render scale", "1 is fastest. Higher values sharpen text and small sprites.", 0, 1, 99, 1},
     {"VSync", "Vertical sync", "Keep the game's presentation synchronized with the display.", 0, 0, 1, 1},
     {"ControllerHotplug", "Controller hotplug", "Detect controllers that connect after the game starts.", 0, 0, 1, 1},
-    {"EnableCaustics", "Water light patterns", "Draw moving light patterns on flooded floors.", 1, 0, 1, 1},
-    {"EnableBloom", "Bloom", "Add a glow around bright effects.", 1, 0, 1, 1},
-    {"EnableShockwave", "Shockwave distortion", "Distort the scene around explosions and other impacts.", 1, 0, 1, 1},
-    {"EnableColorCorrection", "Room color correction", "Apply the room's color filter.", 1, 0, 1, 1},
+    {"EnableCaustics", "Water light patterns", "Draw moving light patterns on flooded floors.", 1, 0, 1, 0},
+    {"EnableBloom", "Bloom", "Add a glow around bright effects.", 1, 0, 1, 0},
+    {"EnableShockwave", "Shockwave distortion", "Distort the scene around explosions and other impacts.", 1, 0, 1, 0},
+    {"EnableColorCorrection", "Room color correction", "Apply the room's color filter.", 1, 0, 1, 0},
     {"EnableLighting", "Room lighting", "Keep light and darkness effects visible.", 1, 0, 1, 1},
     {"EnableWaterSurface", "Water surface", "Keep water reflections and the mirror room visible.", 1, 0, 1, 1},
+    [ISAAC_OPTION_FRAME_CADENCE] =
+        {"frame_skip", "Frame skip", "30 FPS gives crowded rooms more time per game update.", 2, 0, 2, 1},
+    [ISAAC_OPTION_SKIP_REFLECTIONS] =
+        {"skip_reflections", "Skip water reflections", "Experimental. Skip reflection draws in flooded rooms.", 2, 0, 1, 0},
 };
 
 static const char *skip_space(const char *s) {
@@ -94,7 +102,7 @@ static int read_line(FILE *file, const char **text, char **line, size_t *cap, si
 
 void isaac_options_defaults(isaac_options_menu *menu) {
     for (int i = 0; i < ISAAC_OPTION_COUNT; ++i) menu->values[i] = isaac_option_specs[i].initial;
-    menu->changed = (1u << ISAAC_OPTION_COUNT) - 1;
+    menu->changed = (1u << ISAAC_OPTION_FRAME_CADENCE) - 1;
 }
 
 static int path_for(char path[1024], const char *dir, int effect) {

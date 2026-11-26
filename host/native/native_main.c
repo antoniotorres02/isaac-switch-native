@@ -651,8 +651,19 @@ int isaac_native_main(int argc, char **argv) {
                              (uint32_t)len) ? "ok" : "FAIL");
         free(text);
     }
+#ifdef __SWITCH__
+    if (getenv("ISAAC_SWITCH_PERFORMANCE_DEFAULTS")) {
+        uint32_t n = 0;
+        uint8_t *effects = read_file(ISAAC_EFFECTS_REL, &n);
+        char defaults[512];
+        if (!effects) n = isaac_options_default_effects(defaults, sizeof defaults);
+        if (n) isaac_fs_seed(ISAAC_EFFECTS_REL, effects ? effects : (const uint8_t *)defaults, n);
+        free(effects);
+    }
+#endif
+
     if (g_save_dir[0]) {
-        isaac_options_recover(g_save_dir);
+        if (getenv("ISAAC_SWITCH_PERFORMANCE_DEFAULTS")) isaac_options_recover(g_save_dir);
         isaac_fs_set_persist_hooks(persist, unlink_saved);
         restore_tree("");
         for (unsigned i = 0; i < g_mod_ndirs; ++i) {
