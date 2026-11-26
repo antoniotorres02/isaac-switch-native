@@ -148,6 +148,11 @@ def test_exe(tmp: Path) -> None:
         (deep / "renamed.exe").write_bytes(b"R" * 64)
         assert checks.find_exe([tmp / "a"]) == deep / "renamed.exe", "found by content, not name"
         assert checks.find_exe([tmp / "a"], depth=0) is None
+        source = tmp / "checkout"
+        source.mkdir()
+        assert checks.find_exe([tmp / "a"], source=source) == deep / "renamed.exe"
+        original.write_bytes(b"R" * 64)
+        assert checks.find_exe([tmp / "a"], source=source) == original
         (deep / "Isaac-unpacked-old.EXE").write_bytes(b"short")
         (deep / "notes.txt").write_bytes(b"nothing")
         game = tmp / "game"
@@ -206,6 +211,32 @@ def test_command_windows(tmp: Path) -> None:
     assert "--userns=keep-id" in pod and "-u" not in pod
 
 
+def test_checkout_build(tmp: Path) -> None:
+    from isb import cli
+
+    (tmp / "upstream" / "scripts").mkdir(parents=True)
+    (tmp / "host").mkdir()
+    (tmp / "host" / "build_all.py").touch()
+    (tmp / "stamps").mkdir()
+    game = fake_library(tmp / "library")
+    args = cli.parser().parse_args(["build", "--folder", str(tmp), "--steam", "--exe", str(tmp / "isaac-ng.exe")])
+    assert cli.parser().parse_args(["gui", "--steam"]).steam
+    st = dockerctl.Status("ok", "docker", "docker")
+
+    # The actual Builder CLI assembles a plan from the current checkout.
+    active = cli.make_plan(args, st, "tools:local", steam.describe_folder(game))
+    assert active.source == ROOT
+    assert active.game_exe == tmp / "isaac-ng.exe"
+    cmd = dockerctl.build_command(active, "linux")
+    assert "type=bind,source=%s,target=/opt/isaac/host,readonly" % (ROOT / "host") in mounts(cmd)
+    assert "--steam" in cmd
+    if not system.uses_volume():
+        assert active.work == tmp
+        assert "type=bind,source=%s,target=/work" % tmp in mounts(cmd)
+        assert system.result_folder(tmp) == tmp / "out" / "sd-card"
+    assert not dockerctl.remove_work("docker", tmp) and (tmp / "host" / "build_all.py").is_file()
+
+
 def test_events(tmp: Path) -> None:
     assert dockerctl.parse_event('{"event": "log", "line": "x"}') == {"event": "log", "line": "x"}
     for junk in ("", "plain text", "{not json", '{"no": "event"}', "[1, 2]"):
@@ -214,8 +245,10 @@ def test_events(tmp: Path) -> None:
 
 def test_image_ref(tmp: Path) -> None:
     saved = dict(dockerctl.IMAGE_INFO)
+    source_tree = dockerctl.source_tree
     env = os.environ.pop("ISAAC_BUILDER_IMAGE", None)
     try:
+        dockerctl.source_tree = lambda: None
         dockerctl.IMAGE_INFO.update(digest="")
         assert dockerctl.image_ref() == dockerctl.IMAGE_INFO["local"]
         assert not dockerctl.image_is_published(dockerctl.image_ref())
@@ -226,6 +259,7 @@ def test_image_ref(tmp: Path) -> None:
         os.environ["ISAAC_BUILDER_IMAGE"] = "env:2"
         assert dockerctl.image_ref() == "env:2"
     finally:
+        dockerctl.source_tree = source_tree
         dockerctl.IMAGE_INFO.clear()
         dockerctl.IMAGE_INFO.update(saved)
         os.environ.pop("ISAAC_BUILDER_IMAGE", None)
@@ -386,7 +420,7 @@ def test_cli_check(tmp: Path) -> None:
 
 def main() -> int:
     tests = [test_vdf, test_find_game, test_check_game, test_exe, test_command_linux, test_command_windows,
-             test_events, test_image_ref, test_remove_work, test_progress, test_sdcard, test_redact, test_docker_fixes,
+             test_checkout_build, test_events, test_image_ref, test_remove_work, test_progress, test_sdcard, test_redact, test_docker_fixes,
              test_texts,
              test_cli_check]
     for test in tests:
