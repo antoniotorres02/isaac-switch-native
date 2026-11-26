@@ -254,8 +254,7 @@ static void load_settings(void) {
     fclose(f);
     if (g_zoom < 0) g_zoom = 0;
     if (g_zoom > 100) g_zoom = 100;
-    /* A settings.ini from before the zoom: add its line, and turn the game's
-     * Fullscreen on this once so the default is the console's view. */
+    /* A settings.ini from before the zoom: add its line and enable the new view once. */
     if (!has_zoom && (f = fopen(ROOT "/settings.ini", "a"))) {
         fputs(SETTINGS_ZOOM, f);
         fclose(f);
@@ -307,6 +306,7 @@ static void settings_set(const char *key, int value) {
     }
     free(text);
 }
+
 #define PLUS_TAP_MS 400
 
 #ifndef ISAAC_NO_STEAM
@@ -636,7 +636,7 @@ static int steam_sync_do(int push) {
             ln_error(SIGNED_OUT_TEXT);
         } else {
             g_ln_token_bad = 1;
-            ln_error("steam-token.txt is not usable: %s. X signs in again.", err);
+            ln_error("steam-token.txt is not usable: %s. Press Minus to sign in again.", err);
         }
         return -1;
     }
@@ -710,7 +710,7 @@ static int steam_sync_do(int push) {
         if (!push && isaac_steamcm_token_refused()) {
             g_ln_token_bad = 1;
             ln_error("Steam no longer accepts this console's sign-in: it was removed or has expired. "
-                     "X signs in again. Your saves stay on this console.");
+                     "Press Minus to sign in again. Your saves stay on this console.");
         } else {
             ln_error("%s. Your saves stay on this console and nothing is uploaded at exit.",
                      g_sync_last[0] ? g_sync_last : "The sync could not finish");
@@ -1173,7 +1173,7 @@ static void steam_sync_run(int push) {
 }
 #endif
 
-/* The screen until the player decides: 1 Play, 0 left (+ or HOME), -1 the
+/* The screen until the player decides: 1 Play, 0 left (B or HOME), -1 the
  * screen could not be set up (nothing ran: the caller syncs without it). */
 static int launcher_run(void) {
     PlFontData font;
@@ -1196,6 +1196,8 @@ static int launcher_run(void) {
         return -1;
     }
     framebufferMakeLinear(&fb);
+    isaac_launcher_load_art("romfs:/launcher", ROOT "/ui");
+    int about_open = 0;
 #ifdef ISAAC_NO_STEAM
     stage("launcher: shown (built without Steam)");
     g_ln.phase = ISAAC_LAUNCHER_OFF;
@@ -1206,7 +1208,11 @@ static int launcher_run(void) {
         if (choice < 0 && !appletMainLoop()) choice = 0;
         padUpdate(&g_pad);
         u64 down = choice < 0 ? padGetButtonsDown(&g_pad) : 0;
-        if (down & HidNpadButton_Plus) {
+        if (about_open) {
+            if (down & (HidNpadButton_B | HidNpadButton_Plus)) about_open = 0;
+        } else if (down & HidNpadButton_Plus) {
+            about_open = 1;
+        } else if (down & HidNpadButton_B) {
             choice = 0;
         } else if ((down & HidNpadButton_A) && g_ln.files != ISAAC_FILES_BAD) {
             choice = 1;
@@ -1214,6 +1220,7 @@ static int launcher_run(void) {
         }
         g_ln.t = armTicksToNs(armGetSystemTick() - t0) / 1e9f;
         view = g_ln;
+        view.about_open = choice < 0 && about_open;
         u32 stride;
         uint32_t *px = framebufferBegin(&fb, &stride);
         isaac_launcher_draw(px, (int)(stride / 4), &view);
@@ -1265,8 +1272,6 @@ static int launcher_run(void) {
                 g_ln_cancel = 1;
                 g_ln.signin = ISAAC_SIGNIN_NONE;
                 stage("launcher: sign-in cancelled");
-            } else if (down & HidNpadButton_Plus) {
-                choice = 0;
             } else if ((down & HidNpadButton_Y) && g_ln.signin == ISAAC_SIGNIN_FAILED && !g_ln_busy) {
                 pthread_mutex_unlock(&g_ln_lock);
                 signin_open(&thread, &joinable);
@@ -1291,21 +1296,25 @@ static int launcher_run(void) {
                 g_ln_answer = g_ln.conflict_choice;
                 pthread_cond_broadcast(&g_ln_cond);
             }
+        } else if (about_open && choice < 0) {
+            if (down & (HidNpadButton_B | HidNpadButton_Plus)) about_open = 0;
         } else if (down & HidNpadButton_Plus) {
+            about_open = 1;
+        } else if (down & HidNpadButton_B) {
             choice = 0;
         } else if ((down & HidNpadButton_A) && g_ln.phase != ISAAC_LAUNCHER_SYNCING &&
                    g_ln.files != ISAAC_FILES_BAD) {
             choice = 1;
             g_ln.phase = ISAAC_LAUNCHER_LAUNCHING;
-        } else if ((down & HidNpadButton_Y) && g_ln.phase == ISAAC_LAUNCHER_FAILED && !g_ln_busy) {
+        } else if ((down & HidNpadButton_ZR) && g_ln.phase == ISAAC_LAUNCHER_FAILED && !g_ln_busy) {
             pthread_mutex_unlock(&g_ln_lock);
             if (joinable) pthread_join(thread, NULL);
             stage("launcher: retry");
             joinable = sync_thread_start(&thread) == 0;
             pthread_mutex_lock(&g_ln_lock);
-        } else if ((down & HidNpadButton_X) && g_ln.account_action == ISAAC_ACCOUNT_SIGN_OUT) {
+        } else if ((down & HidNpadButton_Minus) && g_ln.account_action == ISAAC_ACCOUNT_SIGN_OUT) {
             g_ln.signout = ISAAC_SIGNOUT_ASK;
-        } else if ((down & HidNpadButton_X) && g_ln.account_action == ISAAC_ACCOUNT_SIGN_IN) {
+        } else if ((down & HidNpadButton_Minus) && g_ln.account_action == ISAAC_ACCOUNT_SIGN_IN) {
             pthread_mutex_unlock(&g_ln_lock);
             stage("launcher: sign in");
             signin_open(&thread, &joinable);
@@ -1318,6 +1327,7 @@ static int launcher_run(void) {
         }
         g_ln.t = armTicksToNs(armGetSystemTick() - t0) / 1e9f;
         view = g_ln;
+        view.about_open = choice < 0 && about_open;
         pthread_mutex_unlock(&g_ln_lock);
         u32 stride;
         uint32_t *px = framebufferBegin(&fb, &stride);

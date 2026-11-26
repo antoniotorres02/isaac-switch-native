@@ -13,6 +13,7 @@
 #include "native_launcher.h"
 
 #include <math.h>
+#include <png.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,7 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_OUTLINE_H
+#include FT_SYNTHESIS_H
 
 #define W ISAAC_LAUNCHER_W
 #define H ISAAC_LAUNCHER_H
@@ -65,6 +67,120 @@ static inline void blend(int x, int y, uint32_t rgb, int a) {
     dg += ((g - dg) * a) / 255;
     db += ((b - db) * a) / 255;
     *d = (uint32_t)dr | (uint32_t)dg << 8 | (uint32_t)db << 16 | 0xff000000u;
+}
+
+static inline void rgba_pixel(int x, int y, uint32_t rgba) {
+    blend(x, y, ((rgba & 255) << 16) | (rgba & 0xff00) | ((rgba >> 16) & 255), rgba >> 24);
+}
+
+typedef struct {
+    uint32_t *pixels;
+    unsigned width, height;
+} launcher_image;
+
+static launcher_image g_hero, g_logo;
+static unsigned char *g_art_font;
+typedef struct {
+    const char *label;
+    const unsigned char *data;
+    size_t size;
+    launcher_image image;
+} launcher_button;
+
+#include "native_launcher_icons.inc"
+static int g_buttons_loaded;
+
+static int finish_image(launcher_image *out, png_image *png, unsigned max_width, unsigned max_height) {
+    int ok = 0;
+    if (png->width <= max_width && png->height <= max_height) {
+        png->format = PNG_FORMAT_RGBA;
+        uint32_t *pixels = malloc(PNG_IMAGE_SIZE(*png));
+        if (pixels && png_image_finish_read(png, NULL, pixels, 0, NULL)) {
+            *out = (launcher_image){pixels, png->width, png->height};
+            ok = 1;
+        } else free(pixels);
+    }
+    png_image_free(png);
+    return ok;
+}
+
+static int load_image(launcher_image *out, const char *directory, const char *name,
+                      unsigned max_width, unsigned max_height) {
+    if (!directory) return 0;
+    char path[512];
+    int length = snprintf(path, sizeof path, "%s/%s.png", directory, name);
+    if (length < 0 || (size_t)length >= sizeof path) return 0;
+    png_image png = {.version = PNG_IMAGE_VERSION};
+    if (!png_image_begin_read_from_file(&png, path)) return 0;
+    return finish_image(out, &png, max_width, max_height);
+}
+
+static void load_buttons(void) {
+    if (g_buttons_loaded) return;
+    g_buttons_loaded = 1;
+    for (size_t i = 0; i < sizeof g_buttons / sizeof g_buttons[0]; ++i) {
+        launcher_button *button = &g_buttons[i];
+        png_image png = {.version = PNG_IMAGE_VERSION};
+        if (png_image_begin_read_from_memory(&png, button->data, button->size))
+            finish_image(&button->image, &png, 32, 32);
+    }
+}
+
+static void draw_image(const launcher_image *image, int x, int y) {
+    for (unsigned row = 0; row < image->height; ++row)
+        for (unsigned col = 0; col < image->width; ++col)
+            rgba_pixel(x + col, y + row, image->pixels[row * image->width + col]);
+}
+
+static const launcher_image *button_asset(const char *label) {
+    for (size_t i = 0; i < sizeof g_buttons / sizeof g_buttons[0]; ++i)
+        if (!strcmp(g_buttons[i].label, label)) return &g_buttons[i].image;
+    return NULL;
+}
+
+static unsigned char *load_font(const char *directory, size_t *length) {
+    if (!directory) return NULL;
+    char path[512];
+    int n = snprintf(path, sizeof path, "%s/MotivaSans-Regular.ttf", directory);
+    if (n < 0 || (size_t)n + 1 >= sizeof path) return NULL;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        memcpy(path + n - 3, "woff", 5);
+        f = fopen(path, "rb");
+        if (!f) return NULL;
+    }
+    unsigned char *data = NULL;
+    if (!fseek(f, 0, SEEK_END)) {
+        long size = ftell(f);
+        if (size > 0 && size <= 2 * 1024 * 1024 && !fseek(f, 0, SEEK_SET)) {
+            data = malloc((size_t)size);
+            if (data && fread(data, 1, (size_t)size, f) == (size_t)size) *length = (size_t)size;
+            else { free(data); data = NULL; }
+        }
+    }
+    fclose(f);
+    return data;
+}
+
+void isaac_launcher_load_art(const char *packaged, const char *local) {
+    if (!load_image(&g_hero, local, "hero", W, HERO_BOTTOM))
+        load_image(&g_hero, packaged, "hero", W, HERO_BOTTOM);
+    if (!load_image(&g_logo, local, "logo", 680, 244))
+        load_image(&g_logo, packaged, "logo", 680, 244);
+    size_t length = 0;
+    unsigned char *font = load_font(local, &length);
+    if (font && isaac_launcher_set_font(font, length)) {
+        free(font);
+        font = NULL;
+    }
+    if (!font) {
+        font = load_font(packaged, &length);
+        if (font && isaac_launcher_set_font(font, length)) {
+            free(font);
+            font = NULL;
+        }
+    }
+    g_art_font = font;
 }
 
 static uint32_t mix(uint32_t a, uint32_t b, float t) {
@@ -201,12 +317,14 @@ static void arrow(float cx, float cy, float s, int dir, uint32_t rgb) {
              cx, cy + dir * s * 0.48f, rgb, 255);
 }
 
+#ifndef ISAAC_NO_STEAM
 static void cloud_icon(float x, float y, float s, uint32_t rgb, int a) {
     circle(x + s * 0.32f, y + s * 0.62f, s * 0.24f, rgb, a);
     circle(x + s * 0.55f, y + s * 0.46f, s * 0.32f, rgb, a);
     circle(x + s * 0.78f, y + s * 0.64f, s * 0.22f, rgb, a);
     rrect(x + s * 0.3f, y + s * 0.6f, s * 0.5f, s * 0.26f, 1, rgb, a);
 }
+#endif
 
 /* ---- text ------------------------------------------------------------------ */
 
@@ -223,9 +341,12 @@ static glyph g_glyphs[GLYPHS];
 
 int isaac_launcher_set_font(const void *data, size_t size) {
     if (!g_ft && FT_Init_FreeType(&g_ft)) return -1;
-    if (g_face) { FT_Done_Face(g_face); g_face = NULL; }
+    FT_Face face;
+    if (FT_New_Memory_Face(g_ft, data, (FT_Long)size, 0, &face)) return -1;
+    if (g_face) FT_Done_Face(g_face);
+    g_face = face;
     for (int i = 0; i < GLYPHS; ++i) { free(g_glyphs[i].bmp); g_glyphs[i] = (glyph){ 0 }; }
-    return FT_New_Memory_Face(g_ft, data, (FT_Long)size, 0, &g_face) ? -1 : 0;
+    return 0;
 }
 
 /* One glyph at `px` pixels, bold by emboldening the outline (the console's
@@ -244,8 +365,9 @@ static const glyph *get_glyph(uint32_t cp, int px, int bold) {
             FT_Load_Char(g_face, cp, FT_LOAD_NO_BITMAP | FT_LOAD_TARGET_LIGHT))
             return g;
         FT_GlyphSlot slot = g_face->glyph;
-        FT_Pos strength = bold ? px * 64 / 22 : 0;
-        if (bold && slot->format == FT_GLYPH_FORMAT_OUTLINE) FT_Outline_EmboldenXY(&slot->outline, strength, 0);
+        FT_Pos strength = (bold & 1) ? px * 64 / 22 : 0;
+        if (bold & 2) FT_GlyphSlot_Oblique(slot);
+        if (strength && slot->format == FT_GLYPH_FORMAT_OUTLINE) FT_Outline_EmboldenXY(&slot->outline, strength, 0);
         if (FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL)) return g;
         FT_Bitmap *b = &slot->bitmap;
         g->w = (int16_t)b->width;
@@ -348,12 +470,47 @@ static int paragraph(int x, int y, int w, const char *s, int px, int lh, uint32_
     return y;
 }
 
-/* A pad button as Switch hints draw it: a disc with its letter. */
-static int pad_button(int x, int cy, const char *letter) {
-    circle(x + 12, cy, 12, C_TEXT, 255);
+static int shoulder_button(const char *letter) {
+    return !strcmp(letter, "L") || !strcmp(letter, "R") ||
+           !strcmp(letter, "ZL") || !strcmp(letter, "ZR");
+}
+
+static int pad_button_width(const char *letter) {
+    const launcher_image *asset = button_asset(letter);
+    if (asset && asset->width) return asset->width;
+    if (shoulder_button(letter)) return 32;
+    if (!strcmp(letter, "D-pad")) return 24;
+    int width = text_w(letter, 15, BOLD, 0) + 10;
+    return width > 24 ? width : 24;
+}
+
+static void pad_button(int x, int cy, const char *letter) {
+    const launcher_image *asset = button_asset(letter);
+    if (asset && asset->width) {
+        draw_image(asset, x, cy - (int)asset->height / 2);
+        return;
+    }
+    int width = pad_button_width(letter);
+    if (!strcmp(letter, "D-pad")) {
+        rrect(x, cy - 5, 24, 10, 2, C_TEXT, 255);
+        rrect(x + 7, cy - 12, 10, 24, 2, C_TEXT, 255);
+        circle(x + 12, cy, 2.5f, C_NAV, 255);
+        return;
+    }
+    if (shoulder_button(letter)) {
+        int left = letter[strlen(letter) - 1] == 'L';
+        rrect(x, cy - 9, width, 20, 4, C_TEXT, 255);
+        rrect(x + (left ? 1 : 9), cy - 12, 22, 10, 4, C_TEXT, 255);
+        rect(x + 4, cy + 8, width - 8, 1, C_NAV, 80);
+    } else if (width == 24) circle(x + 12, cy, 12, C_TEXT, 255);
+    else rrect(x, cy - 12, width, 24, 8, C_TEXT, 255);
+    int up = !strcmp(letter, "↑");
+    if (up || !strcmp(letter, "↓")) {
+        arrow(x + width / 2, cy, 12, up ? -1 : 1, C_NAV);
+        return;
+    }
     int lw = text_w(letter, 15, BOLD, 0);
-    text(x + 12 - lw / 2, cy + 6, letter, 15, BOLD, C_NAV);
-    return 24;
+    text(x + (width - lw) / 2, cy + 6, letter, 15, BOLD, C_NAV);
 }
 
 /* ---- the background, drawn once ----------------------------------------------- */
@@ -392,24 +549,18 @@ static void draw_background(void) {
             g_px[y * g_stride + x] = pack(c);
         }
     }
-    static const struct { short x, y, r; } TEARS[] = {
-        { 720, 70, 38 }, { 860, 200, 22 }, { 1010, 96, 56 }, { 1150, 236, 30 },
-        { 1210, 60, 18 }, { 930, 300, 14 }, { 640, 250, 12 }, { 1080, 300, 9 },
-    };
-    for (size_t i = 0; i < sizeof TEARS / sizeof TEARS[0]; ++i) {
-        float x = TEARS[i].x, y = TEARS[i].y, r = TEARS[i].r;
-        circle(x, y, r, 0x8fb6e8, 26);
-        circle(x - r * 0.3f, y - r * 0.32f, r * 0.28f, 0xffffff, 28);
+    if (g_hero.pixels) {
+        draw_image(&g_hero, (W - (int)g_hero.width) / 2, 0);
+        for (int y = HERO_BOTTOM - 64; y < HERO_BOTTOM; ++y)
+            rect(0, y, W, 1, C_PAGE_TOP, (y - (HERO_BOTTOM - 64)) * 3);
     }
-    /* the title on the banner, bottom left like a library logo */
-    text_ex(52, 222, "The Binding of Isaac", 60, BOLD, 0, 0x000000, 120);
-    text(48, 218, "The Binding of Isaac", 60, BOLD, 0xf3ece4);
-    text_ex(51, 264, "REPENTANCE+", 26, BOLD, 6, 0x000000, 140);
-    text_ex(50, 262, "REPENTANCE+", 26, BOLD, 6, 0xe2b464, 255);
-    text_ex(50, 293, "Native port for Nintendo Switch \xc2\xb7 v1.9.7.19", 15, REG, 0, 0xb9aea4, 255);
+    if (g_logo.pixels) draw_image(&g_logo, 48, 294 - (int)g_logo.height);
+    else {
+        text_ex(52, 229, "The Binding of Isaac", 56, BOLD, 0, 0x000000, 180);
+        text(48, 225, "The Binding of Isaac", 56, BOLD, 0xf3ece4);
+        text_ex(50, 267, "REPENTANCE+", 25, BOLD, 5, 0xe2b464, 255);
+    }
     /* the bars */
-    for (int y = 0; y < 52; ++y)
-        for (int x = 0; x < W; ++x) blend(x, y, C_NAV, y < 48 ? 235 : 255 - (y - 48) * 50);
     rect(0, BAR_TOP, W, BAR_H, 0x0f1620, 190);
     rect(0, BAR_TOP, W, 1, 0x3a4b5e, 120);
     rect(0, FOOT_TOP, W, H - FOOT_TOP, C_NAV, 255);
@@ -420,7 +571,7 @@ static void draw_background(void) {
 
 #ifndef ISAAC_NO_STEAM
 static const char *const STEP_NAMES[ISAAC_LAUNCHER_STEPS] = {
-    "Steam sign-in", "System clock", "Connect to Steam", "Sign in", "Game on this account", "Compare saves",
+    "Steam sign-in", "", "Connect to Steam", "Sign in", "Game on this account", "Compare saves",
 };
 
 static const char *slot_text(int status, int phase, uint32_t *rgb) {
@@ -453,27 +604,6 @@ static void slot_icon(float cx, float cy, int status, int phase, float t) {
 }
 
 #endif /* !ISAAC_NO_STEAM */
-
-static void draw_nav(const isaac_launcher_view *v) {
-#ifdef ISAAC_NO_STEAM
-    (void)v;
-    text_ex(40, 32, "ISAAC ON SWITCH", 16, BOLD, 2, C_TEXT, 255);
-#else
-    cloud_icon(40, 12, 28, C_ACCENT, 255);
-    text_ex(80, 32, "ISAAC ON SWITCH", 16, BOLD, 2, C_TEXT, 255);
-    /* the account, top right */
-    char who[64];
-    if (v->account[0]) snprintf(who, sizeof who, "%s", v->account);
-    else snprintf(who, sizeof who, "Not signed in");
-    int ww = text_w(who, 15, REG, 0);
-    int ax = W - 40 - ww;
-    text(ax, 31, who, 15, REG, v->account[0] ? C_TEXT : C_DIM);
-    rrect_grad(ax - 42, 10, 30, 30, 3, 0x2f6fa8, 0x1a3c62, 1, 255);
-    circle(ax - 27, 21, 5.5f, 0xb7d4ef, 255);
-    rrect(ax - 37, 29, 20, 8, 4, 0xb7d4ef, 255);
-    circle(ax - 14, 36, 4, v->account[0] ? 0x57cbde : 0x6f7a85, 255);
-#endif
-}
 
 /* The files' state, in one column of the play bar. */
 static void draw_files_status(int x, int y1, int y2, const isaac_launcher_view *v) {
@@ -560,13 +690,7 @@ static void draw_play_bar(const isaac_launcher_view *v) {
     }
     text(x, y2, summary, 18, REG, C_TEXT);
 
-    x = 820;
-    label(x, y1, "ON EXIT", C_DIM);
-    text(x, y2, v->phase == ISAAC_LAUNCHER_DONE || v->phase == ISAAC_LAUNCHER_LAUNCHING ? "Uploads your progress"
-                : v->phase == ISAAC_LAUNCHER_SYNCING ? "Waiting for the sync" : "Nothing is uploaded",
-         18, REG, C_TEXT);
-
-    draw_files_status(1056, y1, y2, v);
+    draw_files_status(860, y1, y2, v);
 #endif
 }
 
@@ -593,10 +717,10 @@ static void draw_files_panel(const isaac_launcher_view *v) {
 static void draw_steps(const isaac_launcher_view *v) {
     const int x = 40, y = BAR_TOP + BAR_H + 20, w = 580, h = FOOT_TOP - y - 12;
     panel(x, y, w, h, "STEAM CLOUD SYNC");
-    int failed = -1;
+    int row = 0;
     for (int i = 0; i < ISAAC_LAUNCHER_STEPS; ++i) {
-        int ry = y + 70 + i * 23, s = v->step[i];
-        if (s == ISAAC_STEP_FAIL && failed < 0) failed = i;
+        if (i == ISAAC_LAUNCHER_STEP_CLOCK) continue;
+        int ry = y + 70 + row++ * 23, s = v->step[i];
         float cx = x + 32, cy = ry - 6;
         switch (s) {
         case ISAAC_STEP_RUN: spinner(cx, cy, 7, v->t, C_ACCENT); break;
@@ -612,7 +736,7 @@ static void draw_steps(const isaac_launcher_view *v) {
         text(x + w - 20 - text_w(d, 14, REG, 0), ry, d, 14, REG, C_DIM);
     }
     if (v->error[0] && v->phase != ISAAC_LAUNCHER_SYNCING && v->phase != ISAAC_LAUNCHER_LAUNCHING) {
-        int ey = y + 70 + ISAAC_LAUNCHER_STEPS * 23 - 8;
+        int ey = y + 70 + row * 23 - 8;
         uint32_t ec = v->phase == ISAAC_LAUNCHER_FAILED ? C_BAD
                     : v->phase == ISAAC_LAUNCHER_DONE ? C_WARN : C_DIM;
         rect(x + 20, ey, 3, 34, ec, 255);
@@ -639,22 +763,38 @@ static void draw_slots(const isaac_launcher_view *v) {
             text(cx + 24, ry, t, 15, REG, s == ISAAC_LAUNCHER_SLOT_PENDING || s == ISAAC_SYNC_SLOT_EMPTY ? C_DIM : C_TEXT);
         }
     }
-    text(x + 20, y + h - 18, "Steam Cloud app 250900 \xc2\xb7 saves in sdmc:/switch/isaac-recomp/saves", 13, REG, C_DIM);
+    text(x + 20, y + h - 18, "Saves location: sdmc:/switch/isaac-recomp/saves", 13, REG, C_DIM);
 }
 #endif /* ISAAC_NO_STEAM */
 
+/* The hints at the foot of a dialog, right to left from `x`. */
+static int controller_hint(int x, int cy, const char *key, const char *second, const char *what) {
+    x -= text_w(what, 16, REG, 0);
+    text(x, cy + 6, what, 16, REG, C_TEXT);
+    x -= 8;
+    if (second) {
+        x -= pad_button_width(second);
+        pad_button(x, cy, second);
+        x -= 5;
+    }
+    x -= pad_button_width(key);
+    pad_button(x, cy, key);
+    return x - 28;
+}
+
+static int dialog_hint(int x, int cy, const char *key, const char *what) {
+    return controller_hint(x, cy, key, NULL, what);
+}
+
 static void draw_footer(const isaac_launcher_view *v) {
     int cy = FOOT_TOP + 20;
-    char act[160];
-    fit(act, sizeof act, v->activity, 13, REG, 600);
-    text(40, cy + 5, act, 13, REG, C_DIM);
     /* hints, right to left */
     int x = W - 40;
     struct { const char *key, *what; int on; } hints[] = {
-        { "+", "Exit", 1 },
+        { "B", "Exit", 1 },
+        { "+", "About", 1 },
 #ifndef ISAAC_NO_STEAM
-        { "Y", "Retry sync", v->phase == ISAAC_LAUNCHER_FAILED },
-        { "X", v->account_action == ISAAC_ACCOUNT_SIGN_IN ? "Sign in" : "Sign out",
+        { "−", v->account_action == ISAAC_ACCOUNT_SIGN_IN ? "Sign In" : "Sign Out",
           v->account_action != ISAAC_ACCOUNT_NONE },
 #endif
         { "A", v->phase == ISAAC_LAUNCHER_FAILED ? "Play anyway" : "Play",
@@ -665,10 +805,34 @@ static void draw_footer(const isaac_launcher_view *v) {
         int tw = text_w(hints[i].what, 16, REG, 0);
         x -= tw;
         text(x, cy + 6, hints[i].what, 16, REG, C_TEXT);
-        x -= 32;
+        x -= pad_button_width(hints[i].key) + 8;
         pad_button(x, cy, hints[i].key);
         x -= 28;
     }
+#ifndef ISAAC_NO_STEAM
+    if (v->phase == ISAAC_LAUNCHER_FAILED && v->account_action != ISAAC_ACCOUNT_NONE)
+        x = dialog_hint(x, cy, "ZR", "Retry sync");
+#endif
+    if (x > 60) {
+        char activity[160];
+        fit(activity, sizeof activity, v->activity, 13, REG, x - 40);
+        text(40, cy + 5, activity, 13, REG, C_DIM);
+    }
+}
+
+static void draw_about(void) {
+    int x = 324, y = 174, w = 632, h = 372;
+    rect(0, 0, W, H, 0, 174);
+    rrect_grad(x, y, w, h, 8, C_PAGE_TOP, C_PAGE_BOT, 1, 255);
+    rrect_line(x, y, w, h, 8, 1, C_ACCENT, 180);
+    text(x + 30, y + 53, "isaac-switch-native", 32, BOLD, C_TEXT);
+    text(x + 30, y + 91, "The Binding of Isaac: Repentance+", 19, REG, C_TEXT2);
+    text(x + 30, y + 144, "Switch port by Antonio Torres and Don Claudio", 18, REG, C_TEXT);
+    text(x + 30, y + 176, "Built on the browsing-of-isaac recompiler", 18, REG, C_TEXT);
+    text(x + 30, y + 208, "Switch Button Icons by Gioele Casazza (CC BY 4.0)", 18, REG, C_TEXT);
+    text(x + 30, y + 264, "github.com/antoniotorres02/isaac-switch-native", 17, REG, C_ACCENT);
+    rect(x + 30, y + h - 63, w - 60, 1, 0x3a4b5e, 180);
+    controller_hint(x + w - 32, y + h - 33, "B", "+", "Go Back");
 }
 
 #ifndef ISAAC_NO_STEAM
@@ -706,15 +870,6 @@ static void draw_conflict(const isaac_launcher_view *v) {
     x -= text_w("Keep this copy", 16, REG, 0);
     text(x, cy + 6, "Keep this copy", 16, REG, C_TEXT);
     pad_button(x - 32, cy, "A");
-}
-
-/* The hints at the foot of a dialog, right to left from `x`. */
-static int dialog_hint(int x, int cy, const char *key, const char *what) {
-    x -= text_w(what, 16, REG, 0);
-    text(x, cy + 6, what, 16, REG, C_TEXT);
-    x -= 32;
-    pad_button(x, cy, key);
-    return x - 28;
 }
 
 static void draw_signin(const isaac_launcher_view *v) {
@@ -799,9 +954,20 @@ void isaac_launcher_release(void) {
     for (int i = 0; i < GLYPHS; ++i) { free(g_glyphs[i].bmp); g_glyphs[i] = (glyph){ 0 }; }
     if (g_face) { FT_Done_Face(g_face); g_face = NULL; }
     if (g_ft) { FT_Done_FreeType(g_ft); g_ft = NULL; }
+    free(g_art_font);
+    g_art_font = NULL;
+    free(g_hero.pixels);
+    free(g_logo.pixels);
+    g_hero = g_logo = (launcher_image){0};
+    g_buttons_loaded = 0;
+    for (size_t i = 0; i < sizeof g_buttons / sizeof g_buttons[0]; ++i) {
+        free(g_buttons[i].image.pixels);
+        g_buttons[i].image = (launcher_image){0};
+    }
 }
 
 void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view *v) {
+    load_buttons();
     if (!g_bg && (g_bg = malloc((size_t)W * H * 4))) {
         g_px = g_bg;
         g_stride = W;
@@ -817,7 +983,6 @@ void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view
     g_stride = stride;
     g_cw = W;
     g_ch = H;
-    draw_nav(v);
     draw_files_notice(v);
     draw_play_bar(v);
 #ifdef ISAAC_NO_STEAM
@@ -831,6 +996,7 @@ void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view
     else if (v->signin != ISAAC_SIGNIN_NONE) draw_signin(v);
     else if (v->signout != ISAAC_SIGNOUT_NONE) draw_signout(v);
 #endif
+    if (v->about_open) draw_about();
 }
 
 /* ---- the in-game Steam Cloud panel -------------------------------------------- */
@@ -838,6 +1004,7 @@ void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view
  * the panel does not cover stay transparent (alpha 0). */
 #ifndef ISAAC_NO_STEAM
 void isaac_panel_draw(uint32_t *pixels, const isaac_panel_view *v) {
+    load_buttons();
     const int pw = ISAAC_PANEL_W, ph = ISAAC_PANEL_H;
     memset(pixels, 0, (size_t)pw * ph * 4);
     g_px = pixels;

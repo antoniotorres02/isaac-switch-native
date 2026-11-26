@@ -92,12 +92,18 @@ def default_folder() -> Path:
 
 
 def work_folder(base: Path) -> Path | None:
-    return None if uses_volume() else base / "work"
+    if uses_volume():
+        return None
+    nested = base / "work"
+    if not nested.exists() and (base / "stamps").is_dir() and (base / "upstream" / "scripts").is_dir():
+        return base
+    return nested
 
 
 def result_folder(base: Path) -> Path:
     """The SD card folder build_all.py leaves: exported on Windows, in place on Linux."""
-    return base / "sd-card" if uses_volume() else base / "work" / "out" / "sd-card"
+    work = work_folder(base)
+    return base / "sd-card" if work is None else work / "out" / "sd-card"
 
 
 def export_folder(base: Path) -> Path | None:

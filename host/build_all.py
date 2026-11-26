@@ -32,6 +32,8 @@ import sys
 import time
 from pathlib import Path
 
+from launcher_art import art_file, build_art_sources
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import versions  # noqa: E402
@@ -76,6 +78,29 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def native_source_key(host: Path = HERE, art_sources: dict[str, Path] | None = None) -> str:
+    """Invalidate the NRO and SD packaging stages when their inputs change."""
+    paths = [host / name for name in ("build_all.py", "build_native.py", "lift_opt.py", "nro_icon.py",
+                                      "launcher_art.py")]
+    for name in ("native", "patches", "bench", "launcher", "installer"):
+        paths.extend(path for path in (host / name).rglob("*")
+                     if path.is_file() and "__pycache__" not in path.parts)
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        digest.update(path.relative_to(host).as_posix().encode("utf-8") + b"\0")
+        digest.update(bytes.fromhex(sha256_file(path)))
+    for name in ("library_hero.jpg", "logo.png", "MotivaSans-Regular.ttf", "MotivaSans-Regular.woff"):
+        art = art_file(art_sources or {}, name)
+        if art:
+            try:
+                art_digest = sha256_file(art)
+            except OSError:
+                continue
+            digest.update(name.encode("utf-8") + b"\0")
+            digest.update(bytes.fromhex(art_digest))
+    return digest.hexdigest()
 
 
 def memory_limit() -> int | None:
@@ -398,10 +423,13 @@ def build_stages(args, up: Path, out: Path) -> list[Stage]:
         variant = nro_path(out, args.steam).parent
         romfs = variant / "romfs"
         r.sh(["python", HERE / "installer" / "build.py", "--out", out / "installer"])
-        r.sh(["python", HERE / "installer" / "payload.py", "--elf", variant / "isaac-repentance-ns1-recomp.elf",
-              "--segs", romfs / "isaac.segs.bin", "--index", romfs / "instance_index.json",
-              "--bundle", up / ".scratch" / "game-bundle", "--bench", romfs / "isaac-bench",
-              "--out", payload_dir(out)])
+        cmd = ["python", HERE / "installer" / "payload.py", "--elf", variant / "isaac-repentance-ns1-recomp.elf",
+               "--segs", romfs / "isaac.segs.bin", "--index", romfs / "instance_index.json",
+               "--bundle", up / ".scratch" / "game-bundle", "--bench", romfs / "isaac-bench",
+               "--launcher", romfs / "launcher", "--out", payload_dir(out)]
+        if (out / "browsing-native" / "game-icon.jpg").is_file():
+            cmd += ["--icon", out / "browsing-native" / "game-icon.jpg"]
+        r.sh(cmd)
 
     def sd_card(r: Runner) -> None:
         if args.format == "nsp":
@@ -481,10 +509,9 @@ def main(argv=None) -> int:
     ap.add_argument("--upstream-src", type=Path, default=Path("/opt/isaac/upstream"),
                     help="the prepared upstream checkout, copied into <work> at the first run")
     ap.add_argument("--steam", action="store_true",
-                    help="include the Steam sign-in and Cloud sync (an unofficial client: read STEAM-CLOUD.md first)")
+                    help="include Steam sign-in, Workshop and Cloud saves (see STEAM-CLOUD.md)")
     ap.add_argument("--format", choices=("nsp", "nro"), default="nsp",
-                    help="nsp: an installer and the game as a title for the HOME menu (default); "
-                         "nro: the homebrew NRO with the game's files on the SD card")
+                    help="nsp: a HOME menu installer (default); nro: the homebrew NRO")
     ap.add_argument("--check-only", action="store_true", help="run the checks and stop")
     ap.add_argument("--threads", type=int, help=argparse.SUPPRESS)   # Ghidra's, before version 2: ignored
     ap.add_argument("--jobs", type=int, help="parallel jobs (default: all CPUs but one, as memory allows)")
@@ -526,9 +553,10 @@ def main(argv=None) -> int:
 
     up, out = args.work / "upstream", args.work / "out"
     options = "steam" if args.steam else "no-steam"
+    source_key = native_source_key(art_sources=build_art_sources(HERE.parent))
     patches = hashlib.sha256(b"".join(f.read_bytes() for f in sorted((HERE / "upstream-patches").glob("*.patch"))))
     runner = Runner(args.work, "%s %s %s" % (args.version.pe_sha256, args.version.fingerprint(),
-                                             patches.hexdigest()[:16]), options,
+                                             patches.hexdigest()[:16]), f"{options} {source_key}",
                     json_mode=json_mode, fmt=args.format)
     started = time.monotonic()
     signal.signal(signal.SIGTERM, on_sigterm)

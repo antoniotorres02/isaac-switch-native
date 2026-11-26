@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "host/native"
 OUT = ROOT / "build/launcher-preview"
 FONTS = ["/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+         "/usr/share/fonts/noto/NotoSans-Regular.ttf",
          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
 
 HARNESS = r'''
@@ -44,6 +45,7 @@ static void base(isaac_launcher_view *v) {
     snprintf(v->files_summary, sizeof v->files_summary, "22 of 22 found");
 }
 
+#ifndef ISAAC_NO_STEAM
 static void ok_through(isaac_launcher_view *v, int last) {
     static const char *detail[] = { "steamid \xe2\x80\xa6" "1234567", "2026-10-27 22:41",
                                     "cmp1-mad1.steamserver.net:443", "cell 212", "game and all expansions",
@@ -53,6 +55,7 @@ static void ok_through(isaac_launcher_view *v, int last) {
         snprintf(v->step_detail[i], sizeof v->step_detail[i], "%s", detail[i]);
     }
 }
+#endif
 
 static int save(const char *dir, const char *name, const isaac_launcher_view *v) {
     isaac_launcher_draw(px, ISAAC_LAUNCHER_W, v);
@@ -91,6 +94,10 @@ static int save_panel(const char *dir, const char *name, const isaac_panel_view 
 #endif
 
 #ifdef ISAAC_NO_STEAM
+const char *isaac_switch_game_files_label(void) {
+    return "sdmc:/switch/isaac-recomp/guest";
+}
+
 static int states(const char *dir) {
     isaac_launcher_view v;
     int bad = 0;
@@ -102,12 +109,14 @@ static int states(const char *dir) {
     base(&v);
     v.phase = ISAAC_LAUNCHER_LAUNCHING;
     bad |= save(dir, "nosteam-3-launching", &v);
+    v.about_open = 1;
+    bad |= save(dir, "nosteam-5-about", &v);
     return bad;
 }
 #endif
 
 int main(int argc, char **argv) {
-    if (argc != 3) return 2;
+    if (argc != 4) return 2;
     FILE *f = fopen(argv[1], "rb");
     if (!f) return 2;
     fseek(f, 0, SEEK_END);
@@ -117,8 +126,9 @@ int main(int argc, char **argv) {
     if (fread(font, 1, (size_t)n, f) != (size_t)n) return 2;
     fclose(f);
     if (isaac_launcher_set_font(font, (size_t)n)) return 3;
+    isaac_launcher_load_art(argv[3], NULL);
 #ifdef ISAAC_NO_STEAM
-    return states(argv[2]);
+    int bad = states(argv[2]);
 #else
 
     isaac_launcher_view v;
@@ -255,6 +265,13 @@ int main(int argc, char **argv) {
     BAD_FILES(v);
     bad |= save(argv[2], "17-files-missing", &v);
 
+    v.about_open = 1;
+    bad |= save(argv[2], "19-about", &v);
+    v.about_open = 0;
+
+    /* The Switch frees launcher resources before initializing the in-game panel. */
+    isaac_launcher_release();
+    if (isaac_launcher_set_font(font, (size_t)n)) return 3;
     isaac_panel_view pv;
     memset(&pv, 0, sizeof pv);
     snprintf(pv.account, sizeof pv.account, "Steam \xc2\xb7 \xe2\x80\xa6" "1234567");
@@ -284,34 +301,43 @@ int main(int argc, char **argv) {
              "compare its saves with Steam Cloud. Restart the game to sync again.");
     bad |= save_panel(argv[2], "24-panel-unavailable", &pv);
 
-    return bad;
 #endif
+    isaac_launcher_release();
+    free(font);
+    return bad;
 }
 '''
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--upstream", type=Path, help="prepared upstream checkout for the game logo")
     ap.add_argument("--font", default=next((f for f in FONTS if Path(f).exists()), None))
     args = ap.parse_args()
     if not args.font:
         sys.exit("no font found: pass --font")
     from PIL import Image
 
-    OUT.mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, str(NATIVE.parent))
+    from launcher_art import find_art, prepare_art, prepare_button_icons
+
+    PREVIEW_ART = OUT / "launcher-art"
+    prepare_art(PREVIEW_ART, find_art(ROOT), args.upstream)
+    prepare_button_icons(OUT)
     src = OUT / "preview.c"
     src.write_text(HARNESS)
     exe = OUT / "preview"
-    ft = subprocess.run(["pkg-config", "--cflags", "--libs", "freetype2"], capture_output=True, text=True,
+    ft = subprocess.run(["pkg-config", "--cflags", "--libs", "freetype2", "libpng"], capture_output=True, text=True,
                         check=True).stdout.split()
     flags = ["cc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Wno-unused-parameter",
-             "-fsanitize=address,undefined", "-DISAAC_LAUNCHER_PREVIEW", "-I", str(NATIVE)]
+             "-fsanitize=address,undefined", "-DISAAC_LAUNCHER_PREVIEW", "-I", str(NATIVE), "-I", str(OUT)]
     # The screen of a --no-steam build, with what it links: no native_qr.c.
-    variants = ((exe, [str(src), str(NATIVE / "native_launcher.c"), str(NATIVE / "native_qr.c")], []),
-                (OUT / "preview-nosteam", [str(src), str(NATIVE / "native_launcher.c")], ["-DISAAC_NO_STEAM=1"]))
+    sources = [str(src), str(NATIVE / "native_launcher.c")]
+    variants = ((exe, sources + [str(NATIVE / "native_qr.c")], []),
+                (OUT / "preview-nosteam", sources, ["-DISAAC_NO_STEAM=1"]))
     for binary, sources, defines in variants:
         subprocess.run(flags + defines + sources + ["-o", str(binary)] + ft + ["-lm"], check=True)
-        r = subprocess.run([str(binary), args.font, str(OUT)], capture_output=True, text=True)
+        r = subprocess.run([str(binary), args.font, str(OUT), str(PREVIEW_ART)], capture_output=True, text=True)
         if r.returncode:
             sys.exit("preview failed (%d)\n%s" % (r.returncode, r.stderr))
         for name in r.stdout.split():

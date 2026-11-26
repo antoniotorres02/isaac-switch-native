@@ -185,6 +185,7 @@ class Plan:
     threads: int | None = None
     jobs: int | None = None
     check_only: bool = False
+    source: Path | None = None  # a checkout using the image's installed tools
 
 
 def _mount_field(value: str) -> str:
@@ -217,6 +218,16 @@ def build_command(plan: Plan, platform: str | None = None, uid: tuple[int, int] 
         cmd += mount("bind", plan.work, "/work")
     if plan.export is not None:
         cmd += mount("bind", plan.export, "/export")
+    if plan.source is not None:
+        cmd += mount("bind", plan.source / "host", "/opt/isaac/host", readonly=True)
+        host = plan.source / "host"
+        if (host / "launcher_art.py").is_file():
+            from importlib.util import module_from_spec, spec_from_file_location
+            spec = spec_from_file_location("launcher_art", host / "launcher_art.py")
+            art_module = module_from_spec(spec)
+            spec.loader.exec_module(art_module)
+            for name, art in art_module.find_art(plan.source).items():
+                cmd += mount("bind", art, "/" + name, readonly=True)
     cmd += [plan.image, "--progress", "json"]
     if plan.export is not None:
         cmd += ["--export", "/export"]
@@ -293,6 +304,9 @@ def remove_work(exe: str, work: Path | None) -> bool:
             return False
     if not work.exists():
         return True
+    # Existing command-line work can be inside the source checkout.
+    if (work / ".git").exists() or (work / "host" / "build_all.py").is_file():
+        return False
     names = {p.name for p in work.iterdir()}
     if names and not ({"stamps", "upstream"} & names):
         return False

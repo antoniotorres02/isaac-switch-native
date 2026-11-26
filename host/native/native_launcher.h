@@ -86,11 +86,13 @@ typedef struct {
     int files;                          /* ISAAC_FILES_* */
     char files_summary[32];             /* "22 of 22 found", "4 missing" */
     char files_detail[192];             /* which ones, and what to do */
+    int about_open;
     float t;                            /* seconds, for the animations */
 } isaac_launcher_view;
 
 /* The font (a TTF/OTF in memory, kept alive by the caller). 0 when usable. */
 int isaac_launcher_set_font(const void *data, size_t size);
+void isaac_launcher_load_art(const char *packaged, const char *local);
 
 /* Draws the whole screen. `stride` is in pixels. */
 void isaac_launcher_draw(uint32_t *pixels, int stride, const isaac_launcher_view *view);

@@ -28,6 +28,9 @@ import sys
 import time
 from pathlib import Path
 
+from launcher_art import build_art_sources, prepare_art, prepare_button_icons
+from nro_icon import prepare_icon
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 DEFAULT_UPSTREAM = REPO / "build" / "browsing-port" / "repo"
@@ -269,18 +272,30 @@ def main() -> int:
     ap.add_argument("--extra-patches", type=Path,
                     help="also apply this directory's *.patch after patches/ (work in progress; use with --out)")
     ap.add_argument("--no-steam", action="store_true",
-                    help="leave out everything that talks to Steam: Cloud sync, sign-in, ownership check "
-                         "and the network code behind them (variant <profile>-nosteam unless --tag says otherwise)")
+                    help="leave out Steam Cloud, sign-in, ownership checks and their network code "
+                         "(variant <profile>-nosteam unless --tag says otherwise)")
     ap.add_argument("--lift-opt", action="store_true",
                     help="rewrite the lifted TUs with lift_opt.py before compiling them")
+    ap.add_argument("--icon", type=Path, help="use this 256×256 JPEG as the NRO icon")
     args = ap.parse_args()
 
     switch = PROFILES[args.profile].get("switch", False)
+    if switch and args.icon is None:
+        icon = args.out / "game-icon.jpg"
+        try:
+            if prepare_icon(args.upstream / "tools" / "isaac-ng.unpacked.exe", icon):
+                args.icon = icon
+        except (ImportError, OSError, ValueError) as error:
+            print("Could not prepare the game icon: %s" % error, file=sys.stderr)
+    elif switch and not args.icon.is_file():
+        ap.error("--icon must point to an existing JPEG")
+    art = build_art_sources(REPO) if switch else {}
     if switch and not os.environ.get("DEVKITPRO"):
         uid = "%d:%d" % (os.getuid(), os.getgid())
         lift_env = [a for k, v in os.environ.items() if k.startswith("ISAAC_LIFT_OPT_") for a in ("-e", k + "=" + v)]
+        art_mount = [arg for name, path in art.items() for arg in ("-v", f"{path}:/{name}:ro")]
         cmd = ["docker", "run", "--rm", "--network", "none", "-u", uid,
-               "-v", "%s:/work" % REPO, "-w", "/work"] + lift_env + [SDK_IMAGE,
+               "-v", "%s:/work" % REPO, "-w", "/work"] + art_mount + lift_env + [SDK_IMAGE,
                "python3", "host/build_native.py", "--profile", args.profile,
                "--jobs", str(args.jobs), "--tag=" + args.tag, "--lift-flags=" + args.lift_flags,
                "--host-flags=" + args.host_flags, "--ld-flags=" + args.ld_flags]
@@ -290,6 +305,8 @@ def main() -> int:
             cmd += ["--out", in_work(args.out)]
         if args.upstream.resolve() != DEFAULT_UPSTREAM.resolve():
             cmd += ["--upstream", in_work(args.upstream)]
+        if args.icon is not None:
+            cmd += ["--icon", in_work(args.icon)]
         if args.extra_patches:
             cmd += ["--extra-patches", in_work(args.extra_patches)]
         if args.lift_opt:
@@ -323,9 +340,11 @@ def main() -> int:
     compat = HERE / "native" / "compat"
     inc = ["-I", str(compat), "-I", str(HERE / "native"), "-I", str(rec / "host" / "include"), "-I", str(rec / "host" / "generated"),
            "-I", str(rec / "lift"), "-I", str(gu), "-I", str(lua)]
+    launcher_icons = None
     if switch:
-        inc += ["-I", dkp + "/libnx/include", "-I", dkp + "/portlibs/switch/include",
-                "-I", dkp + "/portlibs/switch/include/freetype2"]
+        launcher_icons = prepare_button_icons(out / "launcher")
+        inc += ["-I", str(launcher_icons.parent), "-I", dkp + "/libnx/include",
+                "-I", dkp + "/portlibs/switch/include", "-I", dkp + "/portlibs/switch/include/freetype2"]
 
     jobs = []
     stamps = []
@@ -341,7 +360,8 @@ def main() -> int:
                             + list((rec / "host" / "generated").glob("*.h"))
                             + list((rec / "lift").glob("*.h")) + list(compat.rglob("*.h"))
                             + list((HERE / "native").glob("*.h"))
-                            + list(gu.glob("*.h")) + [lua / "luaconf.h"])
+                            + list(gu.glob("*.h")) + [lua / "luaconf.h"]
+                            + ([launcher_icons] if launcher_icons else []))
     lift_hdrs = fingerprint(list(gu.glob("*.h")) + [rec / "lift" / "recomp_rt.h"])
 
     def add(srcf: Path, flags, prefix: str):
@@ -427,6 +447,7 @@ def main() -> int:
             shutil.rmtree(romfs)
         romfs.mkdir()
         shutil.copy2(segs, romfs / "isaac.segs.bin")
+        prepare_art(romfs / "launcher", art, upstream)
         index = upstream / ".scratch" / "game-dist" / "instance_index.json"
         if not index.exists():
             sys.exit("missing %s: run the upstream ship.py build first" % index)
@@ -434,14 +455,20 @@ def main() -> int:
         shutil.copytree(HERE / "bench" / "isaac-bench", romfs / "isaac-bench")   # --bench
         nacp = out / variant / "isaac-repentance-ns1-recomp.nacp"
         nro = out / variant / "isaac-repentance-ns1-recomp.nro"
+        staged_nro = nro.with_suffix(".nro.tmp")
+        staged_nro.unlink(missing_ok=True)
+        icon_arg = ["--icon=" + str(args.icon.resolve())] if args.icon is not None else []
         for cmd in ([dkp + "/tools/bin/nacptool", "--create", "ISAAC REPENTANCE+ NS1 RECOMP", "isaacport",
                      "0.1.0", str(nacp)],
-                    [dkp + "/tools/bin/elf2nro", str(exe), str(nro), "--nacp=" + str(nacp),
-                     "--romfsdir=" + str(romfs)]):
+                    [dkp + "/tools/bin/elf2nro", str(exe), str(staged_nro), "--nacp=" + str(nacp),
+                     "--romfsdir=" + str(romfs)] + icon_arg):
             r = sh(cmd)
             if r.returncode:
+                staged_nro.unlink(missing_ok=True)
                 print(r.stdout + r.stderr)
                 return 1
+        # The SD preview can still be a hard link to the previous NRO.
+        staged_nro.replace(nro)
         print("nro: %s (%.1f MB), sha256 %s" % (nro, nro.stat().st_size / 1048576,
                                                 hashlib.sha256(nro.read_bytes()).hexdigest()))
     (out / variant / "build.json").write_text(json.dumps({

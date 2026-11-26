@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "host/build_all.py"
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("build_all", SCRIPT)
 build_all = importlib.util.module_from_spec(spec)
 sys.modules["build_all"] = build_all
@@ -189,6 +190,39 @@ def test_resume(tmp: Path) -> None:
     assert go(exe="h2", options="steam") == ["b", "c", "d"], "what follows a redone stage is redone"
     (work / "stamps" / "d").write_text("stale")
     assert go(exe="h2", options="steam") == ["d"]
+
+
+def test_native_source_resume(tmp: Path) -> None:
+    host = tmp / "checkout"
+    host.mkdir()
+    for name in ("build_all.py", "build_native.py", "lift_opt.py", "nro_icon.py", "launcher_art.py"):
+        (host / name).write_text("# fixture")
+    native = host / "native"
+    native.mkdir()
+    source = native / "native_workshop.c"
+    source.write_text("// first version")
+    art = tmp / "launcher-art"
+    art.mkdir()
+
+    def go():
+        ran = []
+        runner = build_all.Runner(tmp / "work", "h", f"steam {build_all.native_source_key(host, {'local': art})}",
+                                  out=io.StringIO())
+        script = [build_all.Stage(name, name, lambda run, name=name: ran.append(name),
+                                  depends_on_options=name in ("nro", "sdcard"))
+                  for name in ("prepare", "lift", "assets", "nro", "sdcard")]
+        runner.execute(script)
+        return ran
+
+    assert go() == ["prepare", "lift", "assets", "nro", "sdcard"]
+    assert go() == []
+    source.write_text("// updated version")
+    assert go() == ["nro", "sdcard"]
+    source.unlink()
+    assert go() == ["nro", "sdcard"]
+    (art / "MotivaSans-Regular.ttf").write_bytes(b"font fixture")
+    assert go() == ["nro", "sdcard"]
+    assert go() == []
 
 
 def test_produces(tmp: Path) -> None:
@@ -374,7 +408,9 @@ def test_main_json_problems(tmp: Path) -> None:
 
 
 def main() -> int:
-    for test in (test_exe, test_shipped_versions, test_functions_data, test_game, test_work, test_resume, test_produces, test_unexpected_error, test_sigterm, test_sh, test_sd_card, test_main_refuses_quickly,
+    for test in (test_exe, test_shipped_versions, test_functions_data, test_game, test_work, test_resume,
+                 test_native_source_resume, test_produces, test_unexpected_error, test_sigterm, test_sh,
+                 test_sd_card, test_main_refuses_quickly,
                  test_json_events, test_json_log_lines, test_export, test_main_json_problems):
         with tempfile.TemporaryDirectory() as d:
             test(Path(d))
