@@ -40,6 +40,7 @@ static void base(isaac_launcher_view *v) {
     for (int i = 0; i < ISAAC_STEAMSYNC_SLOTS; ++i) v->slot[i] = ISAAC_LAUNCHER_SLOT_PENDING;
     snprintf(v->account, sizeof v->account, "Steam \xc2\xb7 \xe2\x80\xa6" "1234567");
     v->t = 0.35f;
+    v->options_available = 1;
     v->files = ISAAC_FILES_OK;
     snprintf(v->files_summary, sizeof v->files_summary, "22 of 22 found");
 }
@@ -91,6 +92,10 @@ static int save_panel(const char *dir, const char *name, const isaac_panel_view 
 #endif
 
 #ifdef ISAAC_NO_STEAM
+const char *isaac_switch_game_files_label(void) {
+    return "sdmc:/switch/isaac-recomp/guest";
+}
+
 static int states(const char *dir) {
     isaac_launcher_view v;
     int bad = 0;
@@ -102,6 +107,12 @@ static int states(const char *dir) {
     base(&v);
     v.phase = ISAAC_LAUNCHER_LAUNCHING;
     bad |= save(dir, "nosteam-3-launching", &v);
+    isaac_options_menu options = {0};
+    isaac_options_defaults(&options);
+    base(&v);
+    v.options = &options;
+    bad |= save(dir, "nosteam-4-options", &v);
+    v.options = NULL;
     return bad;
 }
 #endif
@@ -254,6 +265,12 @@ int main(int argc, char **argv) {
     memcpy(v.slot, slots, sizeof slots);
     BAD_FILES(v);
     bad |= save(argv[2], "17-files-missing", &v);
+    isaac_options_menu options = {0};
+    isaac_options_defaults(&options);
+    base(&v);
+    v.options = &options;
+    bad |= save(argv[2], "18-game-options", &v);
+    v.options = NULL;
 
     isaac_panel_view pv;
     memset(&pv, 0, sizeof pv);
@@ -307,8 +324,9 @@ def main() -> int:
     flags = ["cc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Wno-unused-parameter",
              "-fsanitize=address,undefined", "-DISAAC_LAUNCHER_PREVIEW", "-I", str(NATIVE)]
     # The screen of a --no-steam build, with what it links: no native_qr.c.
-    variants = ((exe, [str(src), str(NATIVE / "native_launcher.c"), str(NATIVE / "native_qr.c")], []),
-                (OUT / "preview-nosteam", [str(src), str(NATIVE / "native_launcher.c")], ["-DISAAC_NO_STEAM=1"]))
+    common = [str(src), str(NATIVE / "native_launcher.c"), str(NATIVE / "native_options.c")]
+    variants = ((exe, common + [str(NATIVE / "native_qr.c")], []),
+                (OUT / "preview-nosteam", common, ["-DISAAC_NO_STEAM=1"]))
     for binary, sources, defines in variants:
         subprocess.run(flags + defines + sources + ["-o", str(binary)] + ft + ["-lm"], check=True)
         r = subprocess.run([str(binary), args.font, str(OUT)], capture_output=True, text=True)
